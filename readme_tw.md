@@ -179,8 +179,8 @@ A: 重新啟動 GUI 即可載入預設值。
 
 ## 授權條款
 
-本專案採 MIT License 授權。\
-詳見 [LICENSE](LICENSE)。
+本專案採 CC BY-NC 4.0 授權。\
+詳見 [LICENSE](https://creativecommons.org/licenses/by-nc/4.0/) 。
 
 ---
 
