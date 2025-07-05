@@ -24,6 +24,8 @@
 A modern, interactive PyQt6-based GUI for simulating and visualizing cell-based Notch signaling models using Voronoi tessellation.  
 This tool allows you to design, preview, and simulate various cell arrangements and movement rules, and export results as videos and figures.
 
+![image](https://github.com/user-attachments/assets/5ef617fc-364e-4fae-ac55-20dfa61ec0b4)
+
 ---
 
 ## Features
