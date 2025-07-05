@@ -1,5 +1,5 @@
-# Voronoi Cell Simulation + Simple ODE GUI
-
+# Voronoi Cell Simulation + Simple ODE GUI  
+  [中文說明](readme_tw.md)
 ---
 
 ## ⚠️ Security Warning (English)
