@@ -21,9 +21,10 @@
 
 ---
 
-一個基於 PyQt6 的現代化互動 GUI，用於模擬與視覺化基於 Voronoi 鋪網的細胞 Notch 訊號模型。\\\
+一個基於 PyQt6 的現代化互動 GUI，用於模擬與視覺化基於 Voronoi 鋪網的細胞 Notch 訊號模型。\\
 此工具允許您設計、預覽並模擬各種細胞佈局與移動規則，並將結果匯出為影片與圖表。
 
+![image](https://github.com/user-attachments/assets/5ef617fc-364e-4fae-ac55-20dfa61ec0b4)
 ---
 
 ## 功能介紹
