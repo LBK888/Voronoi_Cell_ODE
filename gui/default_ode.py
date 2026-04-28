@@ -32,7 +32,19 @@ def get_default_ode():
     Y_new = Y + dY * p['dT'] if 'dT' in p else Y + dY
     Y_new = np.clip(Y_new, 0, None)
     dY = (Y_new - Y) / (p['dT'] if 'dT' in p else 1)
-    return dY'''
+    return dY
+
+# Optional Mechanics Function
+# def mechanics(Y, t, params, cell_positions):
+#     """
+#     Return a dictionary evaluating mechanical updates based on ODE outcomes.
+#     Expected keys:
+#       'divide': list of cell indices to proliferate
+#       'die': list of cell indices to undergo apoptosis
+#       'forces': np.ndarray of shape (N, 2) specifying X,Y force vectors for each cell.
+#     """
+#     return {}
+'''
 
 def simple_LI_ode():
     pass

@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.spatial import Voronoi
+from scipy.spatial import Voronoi, QhullError
 
 class VoronoiGrid:
     def __init__(self, grid_shape=(2,1), cell_dist=1.0, pos_rand=0.0, mode='honeycomb', custom_cells=None, import_path=None):
@@ -17,8 +17,23 @@ class VoronoiGrid:
         self.mode = mode
         self.custom_cells = custom_cells
         self.import_path = import_path
-        self.cells = self._init_cells()
-        self.vor = Voronoi(self.cells)
+        self._safe_update_voronoi(self._init_cells())
+
+    def _safe_update_voronoi(self, new_cells, max_retries=3):
+        import logging
+        current_cells = new_cells.copy()
+        for i in range(max_retries):
+            try:
+                self.vor = Voronoi(current_cells)
+                self.cells = current_cells
+                return
+            except QhullError as e:
+                logging.warning(f"QhullError encountered (attempt {i+1}/{max_retries}): {e}. Applying jitter.")
+                current_cells += (np.random.rand(*current_cells.shape) - 0.5) * 1e-4
+        
+        # Last attempt, if it fails it will raise the error normally
+        self.vor = Voronoi(current_cells)
+        self.cells = current_cells
 
     def _init_cells(self):
         import os
@@ -111,8 +126,7 @@ class VoronoiGrid:
             new_cells = rule(new_cells)
         if random_strength > 0:
             new_cells += (np.random.rand(*new_cells.shape)-0.5)*2*self.cell_dist*random_strength
-        self.cells = new_cells
-        self.vor = Voronoi(self.cells) 
+        self._safe_update_voronoi(new_cells) 
 
     def get_inner_cell_indices(self):
         """
@@ -139,11 +153,12 @@ class VoronoiGrid:
         inner_indices = list(all_indices - outer_set - neighbor_set)
         return inner_indices
 
-    def cell_proliferation(self, n=1, mode='area', concentrations=None):
+    def cell_proliferation(self, n=1, mode='area', concentrations=None, target_indices=None):
         from scipy.spatial import ConvexHull
         new_cells = []
         new_conc = []
-        for _ in range(n):
+        n_iters = len(target_indices) if target_indices is not None else n
+        for iter_idx in range(n_iters):
             vor = self.vor  # 每次都用最新的
             inner_indices = self.get_inner_cell_indices()
             # 計算面積
@@ -158,13 +173,18 @@ class VoronoiGrid:
                     areas.append(0)
             if not areas:
                 break
-            # 選最大面積
-            if mode == 'area':
-                idx = inner_indices[np.argmax(areas)]
-            elif mode == 'random':
-                idx = np.random.choice(inner_indices)
+            if target_indices is not None:
+                if target_indices[iter_idx] >= len(self.cells):
+                    continue
+                idx = target_indices[iter_idx]
             else:
-                raise ValueError('mode 必須為 area 或 random')
+                # 選最大面積
+                if mode == 'area':
+                    idx = inner_indices[np.argmax(areas)]
+                elif mode == 'random':
+                    idx = np.random.choice(inner_indices)
+                else:
+                    raise ValueError('mode 必須為 area 或 random')
             # 分裂
             region = vor.regions[vor.point_region[idx]]
             polygon = np.array([vor.vertices[v] for v in region])
@@ -175,17 +195,19 @@ class VoronoiGrid:
             offset = axis * self.cell_dist * 0.75    # 0.75 is a magic number
             self.cells[idx] = self.cells[idx] - offset
             new_cell = center + offset
-            self.cells = np.vstack([self.cells, new_cell])
+            new_cells_arr = np.vstack([self.cells, new_cell])
+            
             if concentrations is not None:
                 new_conc.append(concentrations[idx])
                 concentrations = np.vstack([concentrations, concentrations[idx]])
-            self.vor = Voronoi(self.cells)
+                
+            self._safe_update_voronoi(new_cells_arr)
             new_cells.append(len(self.cells)-1)
         if concentrations is not None:
             return new_cells, concentrations
         return new_cells
 
-    def cell_apoptosis(self, n=1, mode='area', concentrations=None):
+    def cell_apoptosis(self, n=1, mode='area', concentrations=None, target_indices=None):
         """
         細胞死亡：移除面積最小或隨機選的 n 個細胞
         mode: 'area'（預設，最小面積）或 'random'（隨機）
@@ -208,7 +230,9 @@ class VoronoiGrid:
             except:
                 areas.append(1e9)
         # 選擇要移除的細胞
-        if mode == 'area':
+        if target_indices is not None:
+            chosen_indices = [idx for idx in target_indices if idx < len(self.cells)]
+        elif mode == 'area':
             chosen = np.argsort(areas)[:n]
             chosen_indices = [inner_indices[i] for i in chosen]
         elif mode == 'random':
@@ -217,8 +241,8 @@ class VoronoiGrid:
             raise ValueError('mode 必須為 area 或 random')
         keep_mask = np.ones(len(cells), dtype=bool)
         keep_mask[chosen_indices] = False
-        self.cells = self.cells[keep_mask]
-        self.vor = Voronoi(self.cells)
+        new_cells_arr = self.cells[keep_mask]
+        self._safe_update_voronoi(new_cells_arr)
         if concentrations is not None:
             new_conc_arr = concentrations[keep_mask]
             return chosen_indices, new_conc_arr

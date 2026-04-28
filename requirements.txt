@@ -5,4 +5,7 @@ matplotlib
 seaborn
 pandas
 tqdm
-PyQt6 
+PyQt6
+PyQt6-QScintilla
+numba
+h5py 

@@ -3,7 +3,7 @@ from tqdm import tqdm
 from scipy.integrate import solve_ivp
 
 class BiophysicsModel:
-    def __init__(self, cell_count, params, ode_func, init_Y, vor_grid=None, move_rule=None, random_strength=0.0, LaterInhib_switch=None):
+    def __init__(self, cell_count, params, ode_func, mechanics_func=None, init_Y=None, vor_grid=None, move_rule=None, random_strength=0.0, LaterInhib_switch=None):
         self.cell_count = cell_count
         self.params = params
         if ode_func is None:
@@ -12,6 +12,7 @@ class BiophysicsModel:
         if init_Y is None:
             raise ValueError('init_Y must be provided，and shape=(cell_count, n_var)')
         self.init_Y = init_Y
+        self.mechanics_func = mechanics_func
         self.vor_grid = vor_grid
         self.move_rule = move_rule
         self.random_strength = random_strength
@@ -30,41 +31,97 @@ class BiophysicsModel:
         dy = self.ode_func(y, t, self.params)
         return dy.flatten()
 
-    def simulate(self, T, proliferation_steps=None, apoptosis_steps=None, proliferation_n=5, apoptosis_n=3, proliferation_mode='area', apoptosis_mode='area'):
+    def simulate(self, T, proliferation_steps=None, apoptosis_steps=None, proliferation_n=5, apoptosis_n=3, proliferation_mode='area', apoptosis_mode='area', progress_callback=None, check_cancel=None, warning_callback=None):
         """
         T: 總模擬時間
         proliferation_steps: list, 在哪些步驟進行細胞分裂
         apoptosis_steps: list, 在哪些步驟進行細胞死亡
         proliferation_n, apoptosis_n: 每次分裂/死亡的細胞數
         proliferation_mode, apoptosis_mode: 'area' 或 'random'
+        progress_callback: function(current_step, total_steps)
+        check_cancel: function() -> bool (returns True if should cancel)
+        warning_callback: function(msg)
         """
-        from tqdm import trange
+        import numpy as np
+        try:
+            from tqdm import trange
+        except ImportError:
+            trange = range
+            
         y0 = self.init_Y.flatten()
         t_eval = np.arange(0, T, self.params['dT'])
         Y = y0.reshape((self.cell_count, -1))
         history = [Y.copy()]
         cell_positions_history = [self.vor_grid.cells.copy()] if self.vor_grid else []
-        for i, t in zip(trange(1, len(t_eval)), t_eval[1:]):
+        
+        total_steps = len(t_eval) - 1
+        
+        # Use range instead of trange to avoid terminal clutter when using UI, but keep trange if progress_callback is None maybe?
+        iterator = range(1, len(t_eval))
+        
+        warnings_emitted = 0
+        
+        for i, t in zip(iterator, t_eval[1:]):
+            if check_cancel is not None and check_cancel():
+                break
+
             # ODE
             dY = self.ode_func(Y, t, self.params, self.vor_grid.cells)
             Y = Y + dY * self.params['dT']
 
+            # Biological Linter Check (加入開關機制)
+            # 預設為 True (保護濃度不小於0)，但如果設定檔有寫 allow_negative=True 則不限制
+            if not self.params.get('allow_negative', False):
+                if np.any(Y < -1e-5):
+                    if warning_callback is not None and warnings_emitted < 5:
+                        warning_callback(f"Bio-Linter Warning: Negative concentrations at t={t:.2f}. Auto-clipped to 0.")
+                        warnings_emitted += 1
+                Y = np.clip(Y, 0, None)
+                #print("allow_negative is false, Y clipped at t=", t)
+
+            # Cell Mechanics API
+            division_targets = []
+            apoptosis_targets = []
+            forces = None
+            if self.mechanics_func is not None:
+                mech_results = self.mechanics_func(Y, t, self.params, self.vor_grid.cells)
+                if isinstance(mech_results, dict):
+                    division_targets = mech_results.get('divide', [])
+                    apoptosis_targets = mech_results.get('die', [])
+                    forces = mech_results.get('forces', None)
+
             # 細胞分裂
-            if proliferation_steps == "all" or (isinstance(proliferation_steps, (list, tuple, set)) and i in proliferation_steps):
+            if division_targets:
+                new_cells, new_Y = self.vor_grid.cell_proliferation(n=len(division_targets), mode=proliferation_mode, target_indices=division_targets, concentrations=Y)
+                Y = new_Y
+            elif proliferation_steps == "all" or (isinstance(proliferation_steps, (list, tuple, set)) and i in proliferation_steps):
                 new_cells, new_Y = self.vor_grid.cell_proliferation(n=proliferation_n, mode=proliferation_mode, concentrations=Y)
                 Y = new_Y
+                
             # 細胞死亡
-            if apoptosis_steps == "all" or (isinstance(apoptosis_steps, (list, tuple, set)) and i in apoptosis_steps):
+            if apoptosis_targets:
+                removed_cells, new_Y = self.vor_grid.cell_apoptosis(n=len(apoptosis_targets), mode=apoptosis_mode, target_indices=apoptosis_targets, concentrations=Y)
+                Y = new_Y
+            elif apoptosis_steps == "all" or (isinstance(apoptosis_steps, (list, tuple, set)) and i in apoptosis_steps):
                 removed_cells, new_Y = self.vor_grid.cell_apoptosis(n=apoptosis_n, mode=apoptosis_mode, concentrations=Y)
                 Y = new_Y
+                
             history.append(Y.copy())
+            
             # 細胞移動
-            if self.move_rule is not None:
+            if forces is not None:
+                self.vor_grid.move_cells(lambda cells: cells + forces, self.random_strength)
+            elif self.move_rule is not None:
                 self.vor_grid.move_cells(self.move_rule, self.random_strength)
+            elif self.random_strength > 0:
+                self.vor_grid.move_cells(None, self.random_strength)
+                
             if self.vor_grid is not None:
                 cell_positions_history.append(self.vor_grid.cells.copy())
+                
+            if progress_callback is not None:
+                progress_callback(i, total_steps)
         
-        # 由於細胞數會變動，history 需用 object array
         history_arr = np.empty(len(history), dtype=object)
         for idx, arr in enumerate(history):
             history_arr[idx] = arr

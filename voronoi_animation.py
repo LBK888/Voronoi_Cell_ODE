@@ -9,7 +9,7 @@ import numpy as np
 import os
 
 class VoronoiAnimator:
-    def __init__(self, vor_grid, sim_history, color_func=None, cell_positions_history=None, show_ticks=False, dynamic_range=True):
+    def __init__(self, vor_grid, sim_history, color_func=None, cell_positions_history=None, show_ticks=False, dynamic_range=True, params=None, color_func_str=None):
         """
         vor_grid: VoronoiGrid 物件
         sim_history: 模擬結果 (time, cell, var)
@@ -24,8 +24,28 @@ class VoronoiAnimator:
         self.cell_positions_history = cell_positions_history
         self.show_ticks = show_ticks
         self.dynamic_range = dynamic_range
+        self.params = params
+        self.color_func_str = color_func_str
         self.xlim = None
         self.ylim = None
+        
+        # Pre-calculate global min/max bounds for all variables
+        self.global_bounds = []
+        if self.sim_history and len(self.sim_history) > 0 and len(self.sim_history[0]) > 0:
+            try:
+                n_var = self.sim_history[0].shape[1]
+                for i in range(n_var):
+                    all_vals = []
+                    for frame in self.sim_history:
+                        if len(frame) > 0 and len(frame[0]) > i:
+                            all_vals.append(frame[:, i])
+                    if all_vals:
+                        concat_vals = np.concatenate(all_vals)
+                        self.global_bounds.append((concat_vals.min(), concat_vals.max()))
+                    else:
+                        self.global_bounds.append((0, 1))
+            except Exception:
+                pass
 
     def _draw_frame(self, ax, frame, save_path=None, line_colors='black', line_width=2, line_alpha=0.7, point_size=10):
         sim_history = self.sim_history
@@ -44,30 +64,36 @@ class VoronoiAnimator:
         off_center2_colors = None
         membrane_colors = None
         if color_func:
-            if 'mode' in color_func.__code__.co_varnames:
+            import inspect
+            sig = inspect.signature(color_func)
+            kwargs = {}
+            if 'global_bounds' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                kwargs['global_bounds'] = self.global_bounds
+                
+            if 'mode' in sig.parameters:
                 try:
-                    poly_colors = color_func(sim_history[frame], mode='polygon')
+                    poly_colors = color_func(sim_history[frame], mode='polygon', **kwargs)
                 except Exception as e:
                     poly_colors = None
                 try:
-                    center_colors = color_func(sim_history[frame], mode='center')
+                    center_colors = color_func(sim_history[frame], mode='center', **kwargs)
                 except Exception:
                     center_colors = None
                 try:
-                    off_center_colors = color_func(sim_history[frame], mode='off_center')
+                    off_center_colors = color_func(sim_history[frame], mode='off_center', **kwargs)
                 except Exception:
                     off_center_colors = None
                 try:
-                    off_center2_colors = color_func(sim_history[frame], mode='off_center2')
+                    off_center2_colors = color_func(sim_history[frame], mode='off_center2', **kwargs)
                 except Exception:
                     off_center2_colors = None
                 try:
-                    membrane_colors = color_func(sim_history[frame], mode='membrane')
+                    membrane_colors = color_func(sim_history[frame], mode='membrane', **kwargs)
                 except Exception:
                     membrane_colors = None
             else:
                 try:
-                    poly_colors = color_func(sim_history[frame])
+                    poly_colors = color_func(sim_history[frame], **kwargs)
                 except Exception as e:
                     poly_colors = None
         # 畫每個細胞的 Voronoi polygon
@@ -75,8 +101,9 @@ class VoronoiAnimator:
             for i, region_index in enumerate(vor.point_region):
                 region = vor.regions[region_index]
                 if not -1 in region and len(region) > 0:
-                    polygon = [vor.vertices[v] for v in region]
-                    poly_patch = Polygon(polygon, closed=True, facecolor=poly_colors[i], edgecolor=line_colors, linewidth=line_width, alpha=line_alpha)
+                    polygon = [vor.vertices[v] for v in region]  
+                    edge_rgba = mcolors.to_rgba(line_colors, alpha=line_alpha)
+                    poly_patch = Polygon(polygon, closed=True, facecolor=poly_colors[i], edgecolor=edge_rgba, linewidth=line_width)
                     ax.add_patch(poly_patch)
         
         voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors=line_colors, line_width=line_width, line_alpha=line_alpha, point_size=0)
@@ -164,6 +191,49 @@ class VoronoiAnimator:
             self._draw_frame(ax, frame, None, line_colors, line_width, line_alpha, point_size)
         from matplotlib.animation import FuncAnimation
         anim = FuncAnimation(fig, animate_func, frames=len(self.sim_history), interval=interval, blit=False, repeat=False)
+        
+        # Add colorbars
+        if self.params and 'labels' in self.params and self.color_func:
+            labels = self.params['labels']
+            n_var = self.params.get('n_var', len(labels))
+            import inspect
+            import re
+            try:
+                source = self.color_func_str if self.color_func_str else inspect.getsource(self.color_func)
+                cmaps = re.findall(r'plt\.cm\.([a-zA-Z0-9_]+)', source)
+            except Exception:
+                cmaps = []
+            
+            unique_cmaps = []
+            for c in cmaps:
+                if c not in unique_cmaps:
+                    unique_cmaps.append(c)
+            
+            history_arr = np.array([np.array(frame) for frame in self.sim_history], dtype=object)
+            
+            # Use matplotlib's make_axes_locatable for neat colorbar stacking
+            from mpl_toolkits.axes_grid1 import make_axes_locatable
+            divider = make_axes_locatable(ax)
+            
+            for i, cmap_name in enumerate(unique_cmaps):
+                if i >= n_var or i >= len(labels):
+                    break
+                
+                # find global min max for this variable
+                if i < len(self.global_bounds):
+                    vmin, vmax = self.global_bounds[i]
+                else:
+                    vmin, vmax = 0, 1
+                
+                if vmin == vmax:
+                    vmax = vmin + 1e-8
+                    
+                sm = plt.cm.ScalarMappable(cmap=cmap_name, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+                sm.set_array([])
+                cax = divider.append_axes("right", size="5%", pad=0.8)
+                cbar = fig.colorbar(sm, cax=cax)
+                cbar.set_label(labels[i])
+                
         return anim
 
     @staticmethod
