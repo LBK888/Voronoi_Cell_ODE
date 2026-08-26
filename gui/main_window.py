@@ -3,10 +3,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QFormLayout, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QFileDialog, QProgressBar, QStatusBar, QSpinBox, QSlider,
-    QDoubleSpinBox, QScrollArea, QMenuBar, QMenu
+    QDoubleSpinBox, QScrollArea, QMenuBar, QMenu, QTabWidget, QSplitter,
+    QSizePolicy, QFrame, QDialog
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QColor, QPalette
+from PyQt6.QtGui import QFont, QColor, QPalette, QAction, QKeySequence
 from gui.logger import setup_logger
 from gui.preview_canvas import PreviewCanvas
 import numpy as np
@@ -20,10 +21,15 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import json
 
-from voronoi_grid import VoronoiGrid
-from biophysics_model import BiophysicsModel
+from voronoi_grid import MovementPlan, VoronoiGrid
 from voronoi_animation import VoronoiAnimator
+from gui.simulation_session import (
+    CellLifecyclePlan,
+    SimulationRequest,
+    SimulationSession,
+)
 from gui.simulation_worker import SimulationWorker
+from gui.results_export_worker import ExportRequest, ResultsExportWorker
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')
 CONFIG_EXAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config_example.json')
@@ -38,14 +44,24 @@ class MainWindow(QMainWindow):
         self.load_config()
         self.sim_history = None
         self.cell_positions_history = None
+        self.simulation_result = None
         self.grid = None
         self.params = None
         self.worker = None
+        self.export_worker = None
         self.logger.addHandler(GUIStatusHandler(self.status_bar))
 
     def init_ui(self):
         menubar = self.menuBar()
         template_menu = menubar.addMenu('Templates')
+        model_menu = menubar.addMenu('Model')
+        self.open_node_editor_action = QAction('Open Visual Node Editor...', self)
+        self.open_node_editor_action.setShortcut(QKeySequence('Ctrl+Shift+N'))
+        self.open_node_editor_action.setStatusTip(
+            'Edit the current ODE model as a visual node graph'
+        )
+        self.open_node_editor_action.triggered.connect(self.open_node_editor)
+        model_menu.addAction(self.open_node_editor_action)
         
         template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates')
         if os.path.exists(template_dir) and os.path.isdir(template_dir):
@@ -56,11 +72,28 @@ class MainWindow(QMainWindow):
                     action.triggered.connect(lambda checked, f=filename: self.load_template(f))
 
         main_widget = QWidget()
-        main_layout = QHBoxLayout(main_widget)
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(10, 10, 10, 8)
+        workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Left: Settings
         settings_widget = QWidget()
+        settings_widget.setMinimumWidth(320)
+        settings_widget.setMaximumWidth(500)
         settings_layout = QVBoxLayout(settings_widget)
+        settings_layout.setContentsMargins(0, 0, 6, 0)
+        settings_title = QLabel("Simulation setup")
+        settings_title.setObjectName("sectionTitle")
+        settings_layout.addWidget(settings_title)
+        self.settings_tabs = QTabWidget()
+        grid_tab = QWidget()
+        grid_tab_layout = QVBoxLayout(grid_tab)
+        movement_tab = QWidget()
+        movement_tab_layout = QVBoxLayout(movement_tab)
+        model_tab = QWidget()
+        model_tab_layout = QVBoxLayout(model_tab)
+        simulation_tab = QWidget()
+        simulation_tab_layout = QVBoxLayout(simulation_tab)
 
         # Cell grid generation mode
         grid_mode_box = QGroupBox("Cell Grid Generation Mode")
@@ -74,64 +107,72 @@ class MainWindow(QMainWindow):
         ])
         grid_mode_layout.addWidget(self.grid_mode_combo)
         grid_mode_box.setLayout(grid_mode_layout)
-        settings_layout.addWidget(grid_mode_box)
+        grid_tab_layout.addWidget(grid_mode_box)
 
         # Cell grid parameters
         grid_param_box = QGroupBox("Cell Grid Parameters")
         grid_param_form = QFormLayout()
+        grid_param_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        grid_param_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
         grid_shape_row = QHBoxLayout()
         self.grid_shape_x = QSpinBox()
         self.grid_shape_x.setRange(1, 200)
         self.grid_shape_x.setValue(20)
+        self.grid_shape_x.setMinimumWidth(60)
         self.grid_shape_y = QSpinBox()
         self.grid_shape_y.setRange(1, 200)
         self.grid_shape_y.setValue(20)
+        self.grid_shape_y.setMinimumWidth(60)
         grid_shape_row.addWidget(QLabel("X:"))
         grid_shape_row.addWidget(self.grid_shape_x)
         grid_shape_row.addWidget(QLabel("Y:"))
         grid_shape_row.addWidget(self.grid_shape_y)
+        grid_shape_row.setStretch(1, 1)
+        grid_shape_row.setStretch(3, 1)
         grid_param_form.addRow("Grid Shape:", grid_shape_row)
         self.cell_dist_edit = QLineEdit("1.0")
         self.pos_rand_edit = QLineEdit("0.25")
         grid_param_form.addRow("Cell Distance:", self.cell_dist_edit)
         grid_param_form.addRow("Position Randomness:", self.pos_rand_edit)
         grid_param_box.setLayout(grid_param_form)
-        settings_layout.addWidget(grid_param_box)
+        grid_tab_layout.addWidget(grid_param_box)
 
         # Cell movement modes
         move_mode_box = QGroupBox("Cell Movement Modes")
         move_mode_layout = QVBoxLayout()
-        self.move_random = QCheckBox("Basic Random Movement str:")
+        self.move_random = QCheckBox("Random movement")
         self.move_random_strength = QLineEdit("0.05")
         move_random_row = QHBoxLayout()
         move_random_row.addWidget(self.move_random)
         move_random_row.addWidget(self.move_random_strength)
         move_mode_layout.addLayout(move_random_row)
-        self.move_away = QCheckBox("Move Away From Center str:")
+        self.move_away = QCheckBox("Move away from center")
         self.move_away_strength = QLineEdit("0.1")
         move_away_row = QHBoxLayout()
         move_away_row.addWidget(self.move_away)
         move_away_row.addWidget(self.move_away_strength)
         move_mode_layout.addLayout(move_away_row)
-        self.move_ce = QCheckBox("Convergent Extension str:")
+        self.move_ce = QCheckBox("Convergent extension")
         self.move_ce_strength = QLineEdit("0.02")
         move_ce_row = QHBoxLayout()
         move_ce_row.addWidget(self.move_ce)
         move_ce_row.addWidget(self.move_ce_strength)
         move_mode_layout.addLayout(move_ce_row)
-        self.move_repulsion = QCheckBox("Repulsion (Neighbors, No Outer) str:")
+        self.move_repulsion = QCheckBox("Neighbor repulsion")
         self.move_repulsion_strength = QLineEdit("0.08")
         move_repulsion_row = QHBoxLayout()
         move_repulsion_row.addWidget(self.move_repulsion)
         move_repulsion_row.addWidget(self.move_repulsion_strength)
         move_mode_layout.addLayout(move_repulsion_row)
-        self.move_vertex_model = QCheckBox("Vertex Model (Adhesion) str:")
+        self.move_vertex_model = QCheckBox("Vertex-model adhesion")
         self.move_vertex_model_strength = QLineEdit("0.05")
         move_vertex_model_row = QHBoxLayout()
         move_vertex_model_row.addWidget(self.move_vertex_model)
         move_vertex_model_row.addWidget(self.move_vertex_model_strength)
         move_mode_layout.addLayout(move_vertex_model_row)
-        self.move_division = QCheckBox("Cell Division n:")
+        self.move_division = QCheckBox("Cell division")
         self.move_division_n = QSpinBox()
         self.move_division_n.setRange(1, 10)
         self.move_division_n.setValue(1)
@@ -142,7 +183,7 @@ class MainWindow(QMainWindow):
         move_division_row.addWidget(self.move_division_n)
         move_division_row.addWidget(self.move_division_method)
         move_mode_layout.addLayout(move_division_row)
-        self.move_apoptosis = QCheckBox("Apoptosis n:")
+        self.move_apoptosis = QCheckBox("Apoptosis")
         self.move_apoptosis_n = QSpinBox()
         self.move_apoptosis_n.setRange(1, 10)
         self.move_apoptosis_n.setValue(1)
@@ -153,15 +194,27 @@ class MainWindow(QMainWindow):
         move_apoptosis_row.addWidget(self.move_apoptosis_n)
         move_apoptosis_row.addWidget(self.move_apoptosis_method)
         move_mode_layout.addLayout(move_apoptosis_row)
+        for strength_edit in (
+            self.move_random_strength,
+            self.move_away_strength,
+            self.move_ce_strength,
+            self.move_repulsion_strength,
+            self.move_vertex_model_strength,
+        ):
+            strength_edit.setFixedWidth(88)
+            strength_edit.setToolTip("Movement strength")
         move_mode_box.setLayout(move_mode_layout)
-        settings_layout.addWidget(move_mode_box)
+        movement_tab_layout.addWidget(move_mode_box)
 
         # ODE editor
         ode_box = QGroupBox("ODE Function")
         ode_layout = QVBoxLayout()
-        
-        self.open_node_editor_btn = QPushButton("Open Node Editor Prototype")
-        ode_layout.addWidget(self.open_node_editor_btn)
+        ode_hint = QLabel(
+            "Edit the model as Python source or open the same model as a visual graph."
+        )
+        ode_hint.setObjectName("fieldHint")
+        ode_hint.setWordWrap(True)
+        ode_layout.addWidget(ode_hint)
         
         self.ode_edit = QTextEdit()
         self.ode_edit.setMinimumHeight(50)
@@ -174,13 +227,22 @@ class MainWindow(QMainWindow):
         self.ode_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.ode_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         ode_layout.addWidget(self.ode_edit)
-        
+
         self.open_ode_editor_btn = QPushButton("Open Code Editor")
         self.open_ode_editor_btn.clicked.connect(lambda: self.open_code_editor(self.ode_edit, 'ode'))
-        ode_layout.addWidget(self.open_ode_editor_btn)
+        self.open_ode_editor_btn.setToolTip("Edit the ODE in a larger Python code editor")
+        self.open_node_editor_btn = QPushButton("Visual Node Editor...")
+        self.open_node_editor_btn.setObjectName("accentButton")
+        self.open_node_editor_btn.setToolTip(
+            "Open the current ODE, parameters and color function as a node graph (Ctrl+Shift+N)"
+        )
+        ode_editor_actions = QHBoxLayout()
+        ode_editor_actions.addWidget(self.open_ode_editor_btn)
+        ode_editor_actions.addWidget(self.open_node_editor_btn)
+        ode_layout.addLayout(ode_editor_actions)
 
         ode_box.setLayout(ode_layout)
-        settings_layout.addWidget(ode_box)
+        model_tab_layout.addWidget(ode_box)
 
         # Color function editor
         color_func_box = QGroupBox("Color Function (color_func)")
@@ -198,7 +260,7 @@ class MainWindow(QMainWindow):
         color_func_layout.addWidget(self.open_color_func_editor_btn)
 
         color_func_box.setLayout(color_func_layout)
-        settings_layout.addWidget(color_func_box)
+        model_tab_layout.addWidget(color_func_box)
 
         # Params editor
         params_box = QGroupBox("Params (dict)")
@@ -215,7 +277,7 @@ class MainWindow(QMainWindow):
         self.open_params_editor_btn.clicked.connect(lambda: self.open_code_editor(self.params_edit, 'params'))
         params_layout.addWidget(self.open_params_editor_btn)
 
-        self.generate_params_btn = QPushButton("Generate Visual Controls")
+        self.generate_params_btn = QPushButton("Generate Parameter Controls")
         params_layout.addWidget(self.generate_params_btn)
 
         self.dynamic_params_scroll = QScrollArea()
@@ -224,11 +286,11 @@ class MainWindow(QMainWindow):
         self.dynamic_params_layout = QFormLayout()
         self.dynamic_params_widget.setLayout(self.dynamic_params_layout)
         self.dynamic_params_scroll.setWidget(self.dynamic_params_widget)
-        self.dynamic_params_scroll.setMinimumHeight(150)
+        self.dynamic_params_scroll.setMinimumHeight(120)
         params_layout.addWidget(self.dynamic_params_scroll)
 
         params_box.setLayout(params_layout)
-        settings_layout.addWidget(params_box)
+        model_tab_layout.addWidget(params_box)
 
         # Simulation parameters
         sim_param_box = QGroupBox("Simulation Parameters")
@@ -240,22 +302,47 @@ class MainWindow(QMainWindow):
         sim_param_form.addRow("Replicate:", self.replicate_edit)
         sim_param_form.addRow("Repeats:", self.repeats_edit)
         sim_param_box.setLayout(sim_param_form)
-        settings_layout.addWidget(sim_param_box)
+        simulation_tab_layout.addWidget(sim_param_box)
 
         # Preview button
-        self.preview_btn = QPushButton("Preview")
-        settings_layout.addWidget(self.preview_btn)
+        self.preview_btn = QPushButton("Generate Preview")
         # Apply movement button
-        self.apply_move_btn = QPushButton("Apply Movement")
-        settings_layout.addWidget(self.apply_move_btn)
+        self.apply_move_btn = QPushButton("Apply Movement Once")
+        grid_actions = QVBoxLayout()
+        grid_actions.addWidget(self.preview_btn)
+        grid_actions.addWidget(self.apply_move_btn)
+        grid_tab_layout.addLayout(grid_actions)
+
+        grid_tab_layout.addStretch(1)
+        movement_tab_layout.addStretch(1)
+        model_tab_layout.addStretch(1)
+        simulation_tab_layout.addStretch(1)
+        for tab, title in (
+            (grid_tab, "Grid"),
+            (movement_tab, "Dynamics"),
+            (model_tab, "Model"),
+            (simulation_tab, "Run"),
+        ):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setWidget(tab)
+            self.settings_tabs.addTab(scroll, title)
+        settings_layout.addWidget(self.settings_tabs)
 
         settings_widget.setLayout(settings_layout)
-        main_layout.addWidget(settings_widget, 2)
+        workspace_splitter.addWidget(settings_widget)
 
         # Right: Preview
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
+        preview_layout.setContentsMargins(6, 0, 0, 0)
+        preview_title = QLabel("Preview & results")
+        preview_title.setObjectName("sectionTitle")
+        preview_layout.addWidget(preview_title)
         self.preview_canvas = PreviewCanvas()
+        self.preview_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.preview_canvas.connect_events()
         preview_layout.addWidget(self.preview_canvas)
         # 連接 cell_count_changed signal
@@ -263,6 +350,7 @@ class MainWindow(QMainWindow):
         # 新增動畫嵌入區
         self.figure = Figure()
         self.anim_canvas = FigureCanvas(self.figure)
+        self.anim_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.anim_canvas.setVisible(False)
         preview_layout.addWidget(self.anim_canvas)
         # --- 新增動畫控制元件 ---
@@ -271,27 +359,54 @@ class MainWindow(QMainWindow):
         self.play_btn.setEnabled(False)
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setEnabled(False)
-        self.save_frame_btn = QPushButton("Download Pic")
+        self.save_frame_btn = QPushButton("Save Frame")
         self.save_frame_btn.setEnabled(False)
         anim_ctrl_layout.addWidget(self.play_btn)
         anim_ctrl_layout.addWidget(self.frame_slider)
         anim_ctrl_layout.addWidget(self.save_frame_btn)
         preview_layout.addLayout(anim_ctrl_layout)
         # ---
-        self.download_btn = QPushButton("Download Results")
-        preview_layout.addWidget(self.download_btn)
         self.run_btn = QPushButton("Run Simulation")
-        preview_layout.addWidget(self.run_btn)
+        self.run_btn.setObjectName("primaryButton")
+        self.download_btn = QPushButton("Export Results...")
+        self.download_btn.setEnabled(False)
+        self.download_btn.setToolTip("Export MP4, PDF, CSV, HDF5 and configuration files in the background")
+        primary_actions = QHBoxLayout()
+        primary_actions.addStretch(1)
+        primary_actions.addWidget(self.download_btn)
+        primary_actions.addWidget(self.run_btn)
+        preview_layout.addLayout(primary_actions)
         preview_widget.setLayout(preview_layout)
-        main_layout.addWidget(preview_widget, 5)
+        workspace_splitter.addWidget(preview_widget)
+        workspace_splitter.setStretchFactor(0, 0)
+        workspace_splitter.setStretchFactor(1, 1)
+        workspace_splitter.setSizes([380, 900])
+        main_layout.addWidget(workspace_splitter)
 
         # Status bar and progress bar
         self.status_bar = QStatusBar()
         self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedWidth(220)
         self.status_bar.addPermanentWidget(self.progress_bar)
         self.setStatusBar(self.status_bar)
 
         self.setCentralWidget(main_widget)
+        self.setStyleSheet("""
+            QMainWindow { background: #f3f5f7; }
+            QLabel#sectionTitle { font-size: 17px; font-weight: 600; color: #25313c; padding: 2px 0 6px 2px; }
+            QTabWidget::pane { border: 1px solid #d5dbe1; border-radius: 6px; background: white; top: -1px; }
+            QTabBar::tab { padding: 8px 11px; background: #e8edf2; color: #52606d; }
+            QTabBar::tab:selected { background: white; color: #1261a0; font-weight: 600; }
+            QGroupBox { font-weight: 600; border: 1px solid #d8dee5; border-radius: 6px; margin-top: 12px; padding: 10px 8px 8px 8px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px; }
+            QLabel#fieldHint { color: #52606d; font-weight: 400; padding: 0 1px 4px 1px; }
+            QPushButton { min-height: 28px; padding: 2px 12px; }
+            QPushButton#primaryButton { background: #1261a0; color: white; border: none; border-radius: 4px; min-width: 150px; font-weight: 600; }
+            QPushButton#primaryButton:hover { background: #0d4f85; }
+            QPushButton#accentButton { color: #1A6FB5; border: 1px solid #1A6FB5; border-radius: 4px; font-weight: 600; }
+            QPushButton#accentButton:hover { background: #e8f2fb; }
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { min-height: 25px; }
+        """)
 
         self.logger.info("GUI initialized.")
 
@@ -318,13 +433,13 @@ class MainWindow(QMainWindow):
                        self.move_apoptosis, self.move_apoptosis_n, self.move_apoptosis_method,
                        self.ode_edit, self.params_edit, self.color_func_edit, self.T_edit, self.replicate_edit, self.repeats_edit]:
             if hasattr(widget, 'editingFinished'):
-                widget.editingFinished.connect(self.save_config)
+                widget.editingFinished.connect(lambda *_: self.save_config())
             elif hasattr(widget, 'valueChanged'):
-                widget.valueChanged.connect(self.save_config)
+                widget.valueChanged.connect(lambda *_: self.save_config())
             elif hasattr(widget, 'currentIndexChanged'):
-                widget.currentIndexChanged.connect(self.save_config)
+                widget.currentIndexChanged.connect(lambda *_: self.save_config())
             elif hasattr(widget, 'stateChanged'):
-                widget.stateChanged.connect(self.save_config)
+                widget.stateChanged.connect(lambda *_: self.save_config())
 
         # Real-time IDE-like Syntax Checking
         self.ode_edit.textChanged.connect(lambda: self.validate_code(self.ode_edit, 'ode'))
@@ -421,9 +536,28 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Failed to load template {filename}: {e}")
 
     def open_node_editor(self):
-        from gui.node_editor import NodeEditorDialog
-        dlg = NodeEditorDialog(self)
-        dlg.exec()
+        from gui.node_editor import NodeEditorDialog, NodeEditorDocument
+
+        document = NodeEditorDocument(
+            ode_source=self.ode_edit.toPlainText(),
+            params_source=self.params_edit.toPlainText(),
+            color_func_source=self.color_func_edit.toPlainText(),
+        )
+        dlg = NodeEditorDialog(parent=self, document=document)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            self.status_bar.showMessage("Node editor closed without applying changes", 3000)
+            return
+
+        result = dlg.result_document()
+        if result is None:
+            return
+
+        self.ode_edit.setPlainText(result.ode_source)
+        self.params_edit.setPlainText(result.params_source)
+        self.color_func_edit.setPlainText(result.color_func_source)
+        self.on_generate_params()
+        self.save_config()
+        self.status_bar.showMessage("Model updated from Visual Node Editor", 5000)
 
     def open_code_editor(self, target_edit, editor_type):
         from gui.code_editor_window import CodeEditorDialog
@@ -443,6 +577,9 @@ class MainWindow(QMainWindow):
         return get_default_color_func()
 
     def on_preview(self):
+        self.anim_timer.stop()
+        self.preview_canvas.setVisible(True)
+        self.anim_canvas.setVisible(False)
         # 取得設定
         grid_shape = self.get_grid_shape()
         cell_dist = float(self.cell_dist_edit.text())
@@ -474,18 +611,18 @@ class MainWindow(QMainWindow):
         self.save_config()
 
     def plot_voronoi(self, grid):
-        def plot_func(ax):
-            from scipy.spatial import voronoi_plot_2d
-            voronoi_plot_2d(grid.vor, ax=ax, show_vertices=False, line_colors='black')
-            ax.plot(grid.cells[:,0], grid.cells[:,1], 'o', color='red')
-            ax.set_aspect('equal')
-            ax.set_title('Voronoi Preview')
-        self.preview_canvas.set_cells(grid.cells)
-        self.preview_canvas.plot(plot_func)
+        self.grid = grid
+        self.preview_canvas.set_grid(grid)
 
     def on_apply_movement(self):
         # 取得目前細胞座標
-        cells = self.preview_canvas.get_cells()
+        grid = self.preview_canvas.get_grid()
+        if grid is None:
+            self.on_preview()
+            grid = self.preview_canvas.get_grid()
+            if grid is None:
+                return
+        cells = grid.copy_cells()
         # 根據勾選的運動模式依序套用
         from gui.sim_utils import move_away_from_center, covergent_extension, repulsion_move_neighbors_no_outer, vertex_model_forces
         if self.move_random.isChecked():
@@ -503,22 +640,20 @@ class MainWindow(QMainWindow):
         if getattr(self, 'move_vertex_model', None) and self.move_vertex_model.isChecked():
             vertex_strength = float(self.move_vertex_model_strength.text())
             cells = vertex_model_forces(cells, adhesion_strength=vertex_strength)
-        if self.move_division.isChecked() or self.move_apoptosis.isChecked():
-            from voronoi_grid import VoronoiGrid
-            grid = VoronoiGrid(grid_shape=(len(cells), 1), mode='custom', custom_cells=cells)
-            if self.move_division.isChecked():
-                n = int(self.move_division_n.text())
-                mode = self.move_division_method.currentText()
-                grid.cell_proliferation(n=n, mode=mode)
-            if self.move_apoptosis.isChecked():
-                n = int(self.move_apoptosis_n.text())
-                mode = self.move_apoptosis_method.currentText()
-                grid.cell_apoptosis(n=n, mode=mode)
-            cells = grid.cells
+        grid.replace_cells(cells)
+        if self.move_division.isChecked():
+            n = int(self.move_division_n.text())
+            mode = self.move_division_method.currentText()
+            grid.cell_proliferation(n=n, mode=mode)
+        if self.move_apoptosis.isChecked():
+            n = int(self.move_apoptosis_n.text())
+            mode = self.move_apoptosis_method.currentText()
+            grid.cell_apoptosis(n=n, mode=mode)
 
-        self.preview_canvas.set_cells(cells)
+        self.grid = grid
+        self.preview_canvas.set_grid(grid)
         # 顯示最新細胞數
-        cell_count = len(cells) if hasattr(cells, '__len__') else 0
+        cell_count = len(grid.cells)
         self.status_bar.showMessage(f"Movement applied. Cell number: {cell_count}")
 
     def on_run_simulation(self):
@@ -528,127 +663,86 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Simulation cancelled.")
             return
 
-        from voronoi_grid import VoronoiGrid
-        from biophysics_model import BiophysicsModel
-        import numpy as np
-        import ast
         # 每次 simulation 前，將 self.anim 設為 None
         if hasattr(self, 'anim') and self.anim is not None:
             self.anim = None
         # 清除前一次的 figure，避免重疊
         if hasattr(self, 'anim_canvas') and hasattr(self.anim_canvas, 'figure'):
             self.anim_canvas.figure.clf()
-        cells = self.preview_canvas.get_cells()
-        if len(cells) < 3:
+        preview_grid = self.preview_canvas.get_grid()
+        if preview_grid is None or len(preview_grid.cells) < 3:
             self.on_preview()
-            cells = self.preview_canvas.get_cells()
-            if len(cells) < 3:
+            preview_grid = self.preview_canvas.get_grid()
+            if preview_grid is None or len(preview_grid.cells) < 3:
                 self.status_bar.showMessage("Cell number not enough, please generate cell first")
                 return
-        grid = VoronoiGrid(grid_shape=(len(cells), 1), mode='custom', custom_cells=cells)
-        try:
-            params_text = self.params_edit.toPlainText().strip()
-            if params_text.startswith('params ='):
-                params_text = params_text[len('params ='):].strip()
-            if params_text.startswith('dict'):
-                self.params = eval(params_text, {}, {})
-            else:
-                self.params = ast.literal_eval(params_text)
-        except Exception as e:
-            self.status_bar.showMessage(f"Params error: {e}")
-            print(f"Params error: {e}")
-            return
+        grid = VoronoiGrid.from_cells(preview_grid.copy_cells())
         
         # 如果沒有定義sigma，init_Y等於全部放0
-        sigma = self.params.get('sigma', 0.0) or 0.0
-
         # 自動偵測物質數 n_var, 建立 init_Y
-        n_var = None
-        init_Y = None
-        # 1. params['n_var']
-        if 'n_var' in self.params:
-            try:
-                n_var = int(self.params['n_var'])
-            except:
-                n_var = None
-        # 2. params['init_Y']
-        if n_var is None and 'init_Y' in self.params:
-            try:
-                init_Y = np.array(self.params['init_Y'])
-                if init_Y.ndim == 2:
-                    n_var = init_Y.shape[1]
-                elif init_Y.ndim == 1:
-                    n_var = 1
-            except:
-                n_var = None
         # 3. ODE 預設值（略，需進階分析）
         # 4. fallback 預設 4
-        if n_var is None:
-            n_var = 4
-        if init_Y is None:
-            init_Y = np.random.randn(len(grid.cells), n_var) * sigma
-
-        from gui.sim_utils import move_away_from_center, covergent_extension, repulsion_move_neighbors_no_outer, vertex_model_forces
-        move_rules = []
-        if self.move_away.isChecked():
-            away_strength = float(self.move_away_strength.text())
-            move_rules.append(lambda cells: move_away_from_center(cells, away_strength))
-        if self.move_ce.isChecked():
-            ce_strength = float(self.move_ce_strength.text())
-            move_rules.append(lambda cells: covergent_extension(cells, ce_strength))
-        if self.move_repulsion.isChecked():
-            repulsion_strength = float(self.move_repulsion_strength.text())
-            move_rules.append(lambda cells: repulsion_move_neighbors_no_outer(cells, repulsion_strength))
-        if getattr(self, 'move_vertex_model', None) and self.move_vertex_model.isChecked():
-            vertex_strength = float(self.move_vertex_model_strength.text())
-            move_rules.append(lambda cells: vertex_model_forces(cells, adhesion_strength=vertex_strength))
-        def combined_move_rule(cells):
-            for rule in move_rules:
-                cells = rule(cells)
-            return cells
-        move_rule = combined_move_rule if move_rules else None
-        random_strength = 0.05 if self.move_random.isChecked() else 0.0
         try:
             T = float(self.T_edit.text())
-        except:
+        except ValueError:
             T = 30.0
             self.T_edit.setText('30.0')
 
-        division_n = int(self.move_division_n.text()) if self.move_division.isChecked() else 0
-        division_mode = self.move_division_method.currentText() if self.move_division.isChecked() else 'area'
-        apoptosis_n = int(self.move_apoptosis_n.text()) if self.move_apoptosis.isChecked() else 0
-        apoptosis_mode = self.move_apoptosis_method.currentText() if self.move_apoptosis.isChecked() else 'area'
+        try:
+            movement = MovementPlan(
+                random_strength=(
+                    float(self.move_random_strength.text())
+                    if self.move_random.isChecked() else 0.0
+                ),
+                away_strength=(
+                    float(self.move_away_strength.text())
+                    if self.move_away.isChecked() else 0.0
+                ),
+                convergent_strength=(
+                    float(self.move_ce_strength.text())
+                    if self.move_ce.isChecked() else 0.0
+                ),
+                repulsion_strength=(
+                    float(self.move_repulsion_strength.text())
+                    if self.move_repulsion.isChecked() else 0.0
+                ),
+                vertex_strength=(
+                    float(self.move_vertex_model_strength.text())
+                    if self.move_vertex_model.isChecked() else 0.0
+                ),
+            )
+            lifecycle = CellLifecyclePlan(
+                division_count=(
+                    self.move_division_n.value()
+                    if self.move_division.isChecked() else 0
+                ),
+                division_mode=self.move_division_method.currentText(),
+                apoptosis_count=(
+                    self.move_apoptosis_n.value()
+                    if self.move_apoptosis.isChecked() else 0
+                ),
+                apoptosis_mode=self.move_apoptosis_method.currentText(),
+            )
+            request = SimulationRequest(
+                grid=grid,
+                duration=T,
+                params_source=self.params_edit.toPlainText(),
+                ode_source=self.ode_edit.toPlainText(),
+                movement=movement,
+                lifecycle=lifecycle,
+            )
+            session = SimulationSession(request)
+        except Exception as error:
+            self.status_bar.showMessage(f"Simulation configuration error: {error}")
+            self.logger.error(f"Simulation configuration failed: {error}")
+            return
 
         self.run_btn.setText("Cancel Simulation")
+        self.download_btn.setEnabled(False)
         self.progress_bar.setValue(0)
         self.status_bar.showMessage("Running simulation...")
         
-        ode_func, mech_func = self.get_ode_func()
-        model = BiophysicsModel(cell_count=len(grid.cells), params=self.params, ode_func=ode_func, mechanics_func=mech_func, init_Y=init_Y, vor_grid=grid, move_rule=move_rule, random_strength=random_strength)
-        
-        t_steps = int(T/self.params['dT']) if 'dT' in self.params and self.params['dT'] else 1
-        step_interval = int(1/self.params['dT']) if 'dT' in self.params and self.params['dT'] else 1
-        step_indices = list(range(0, t_steps, step_interval))
-        
-        if division_n:
-            proliferation_steps = step_indices
-        else:
-            proliferation_steps = []
-        if apoptosis_n:
-            apoptosis_steps = step_indices
-        else:
-            apoptosis_steps = []
-            
-        self.worker = SimulationWorker(
-            model=model,
-            T=T,
-            proliferation_steps=proliferation_steps,
-            apoptosis_steps=apoptosis_steps,
-            proliferation_n=division_n,
-            apoptosis_n=apoptosis_n,
-            proliferation_mode=division_mode,
-            apoptosis_mode=apoptosis_mode
-        )
+        self.worker = SimulationWorker(session=session)
         self.worker.progress_updated.connect(self.progress_bar.setValue)
         self.worker.simulation_finished.connect(self.on_simulation_finished)
         self.worker.error_occurred.connect(self.on_simulation_error)
@@ -656,16 +750,19 @@ class MainWindow(QMainWindow):
         
         self.worker.start()
 
-    def on_simulation_finished(self, history_arr, cell_positions_arr, grid):
+    def on_simulation_finished(self, result):
         self.run_btn.setText("Run Simulation")
         self.progress_bar.setValue(100)
-        self.sim_history = list(history_arr)
-        self.cell_positions_history = list(cell_positions_arr)
-        self.grid = grid
+        self.simulation_result = result
+        self.sim_history = list(result.history)
+        self.cell_positions_history = list(result.cell_positions)
+        self.grid = result.grid
+        self.params = dict(result.params)
         self.status_bar.showMessage("Simulation finished. Previewing animation...")
         from voronoi_animation import VoronoiAnimator
-        animator = VoronoiAnimator(grid, self.sim_history, self.get_color_func(), self.cell_positions_history, show_ticks=False, dynamic_range=False, params=self.params, color_func_str=self.color_func_edit.toPlainText().strip())
+        animator = VoronoiAnimator(self.grid, self.sim_history, self.get_color_func(), self.cell_positions_history, show_ticks=False, dynamic_range=False, params=self.params, color_func_str=self.color_func_edit.toPlainText().strip())
         self.anim_canvas.figure.clf()
+        self.preview_canvas.setVisible(False)
         self.anim_canvas.setVisible(True)
         ax = self.figure.add_subplot(111)
         ax.set_xticks([])
@@ -683,20 +780,18 @@ class MainWindow(QMainWindow):
         self.current_frame = 0
         self.anim._draw_frame(self.current_frame)
         self.anim_canvas.draw()
-        self.anim.resume()
+        self.anim.pause()
 
         self.is_anim_playing = False
         
-        if hasattr(self.anim, 'frame_seq'):
-            self.total_frames = len(list(self.anim.frame_seq))
-        else:
-            self.total_frames = len(self.sim_history)
+        self.total_frames = len(self.sim_history)
         self.frame_slider.setEnabled(True)
         self.frame_slider.setMinimum(0)
         self.frame_slider.setMaximum(self.total_frames-1)
         self.frame_slider.setValue(0)
         self.play_btn.setEnabled(True)
         self.save_frame_btn.setEnabled(True)
+        self.download_btn.setEnabled(True)
         self.play_btn.setText("Play")
         self.update_anim_frame(0)
         self.status_bar.showMessage("Animation previewed.")
@@ -704,87 +799,90 @@ class MainWindow(QMainWindow):
 
     def on_simulation_error(self, err_msg):
         self.run_btn.setText("Run Simulation")
+        self.download_btn.setEnabled(self.sim_history is not None)
         self.status_bar.showMessage(f"Simulation error: {err_msg}")
         self.logger.error(err_msg)
 
     def on_download_results(self):
-        import json
+        self._start_results_export()
+
+    def _start_results_export(self):
         import datetime
-        import numpy as np
-        import os
-        from openpyxl import Workbook
-        if self.sim_history is None or self.cell_positions_history is None or self.grid is None:
+
+        if getattr(self, 'export_worker', None) is not None and self.export_worker.isRunning():
+            self.export_worker.cancel()
+            self.download_btn.setEnabled(False)
+            self.status_bar.showMessage("Cancelling export after the current frame...")
+            return
+        if self.simulation_result is None:
             self.status_bar.showMessage("Please run simulation first.")
             return
         folder = QFileDialog.getExistingDirectory(self, "Select Download Folder")
         if not folder:
             self.status_bar.showMessage("Download cancelled.")
             return
+
         self.progress_bar.setValue(0)
-        self.status_bar.showMessage("Saving results...")
+        self.status_bar.showMessage("Preparing background export...")
+        prefix = datetime.datetime.now().strftime('%y%m%d_%H%M_')
+        request = ExportRequest(
+            folder=folder,
+            prefix=prefix,
+            config=self.save_config(),
+            simulation=self.simulation_result,
+            color_func=self.get_color_func(),
+            color_func_source=self.color_func_edit.toPlainText().strip(),
+        )
+        self.export_worker = ResultsExportWorker(
+            request=request,
+            parent=self,
+        )
+        self.export_worker.progress_updated.connect(self.on_export_progress)
+        self.export_worker.export_finished.connect(self.on_export_finished)
+        self.export_worker.error_occurred.connect(self.on_export_error)
+        self.export_worker.cancelled.connect(self.on_export_cancelled)
+        self.anim_timer.stop()
+        self.is_anim_playing = False
+        self.play_btn.setText("Play")
+        self.play_btn.setEnabled(False)
+        self.frame_slider.setEnabled(False)
+        self.save_frame_btn.setEnabled(False)
+        self.download_btn.setText("Cancel Export")
+        self.run_btn.setEnabled(False)
+        self.export_worker.start()
 
-        # 產生日期時間序號
-        dt_prefix = datetime.datetime.now().strftime('%y%m%d_%H%M_')
+    def on_export_progress(self, value, message):
+        self.progress_bar.setValue(value)
+        self.status_bar.showMessage(message)
 
-        # 儲存參數（JSON格式，與config.json相同）
-        param_path = os.path.join(folder, f"{dt_prefix}config.json")
-        config = self.save_config(save_path=param_path)
-        self.progress_bar.setValue(5)
+    def _reset_export_controls(self):
+        self.download_btn.setText("Export Results...")
+        self.download_btn.setEnabled(True)
+        self.run_btn.setEnabled(True)
+        has_results = self.sim_history is not None
+        self.play_btn.setEnabled(has_results)
+        self.frame_slider.setEnabled(has_results)
+        self.save_frame_btn.setEnabled(has_results)
 
-        # 儲存動畫
-        video_path = os.path.join(folder, f"{dt_prefix}simulation.mp4")
-        animator = VoronoiAnimator(self.grid, self.sim_history, self.get_color_func(), self.cell_positions_history, show_ticks=False, dynamic_range=False, params=self.params, color_func_str=self.color_func_edit.toPlainText().strip())
-        animator.animate(interval=5, save_path=video_path, line_colors='black', line_width=1, line_alpha=0.5, point_size=15)
-        self.progress_bar.setValue(50)
-
-        # 儲存濃度圖
-        pdf_path = os.path.join(folder, f"{dt_prefix}concentration.pdf")
-        labels = self.params.get('labels', [f'Y[{i}]' for i in range(self.sim_history[0].shape[1])])
-        VoronoiAnimator.plot_concentration_over_time(self.sim_history, save_path=pdf_path, labels=labels, cell_indices=[0])
-        self.progress_bar.setValue(55)
-
-        # 儲存 cells.csv 與 cells.h5
-        csv_path = os.path.join(folder, f"{dt_prefix}cells.csv")
-        h5_path = os.path.join(folder, f"{dt_prefix}cells.h5")
-        
-        nY = self.sim_history[0].shape[1] if len(self.sim_history) > 0 else 0
-        headers = ['T', 'step', 'x', 'y'] + [f'Y[{i}]' for i in range(nY)]
-        
-        try:
-            T_val = float(self.T_edit.text())
-        except:
-            self.status_bar.showMessage("Unable to save cell grid, T is not a number or not available.")
-            return
-        try:
-            dT_step = int(1/float(self.params.get('dT', None)))
-        except:
-            self.status_bar.showMessage("Unable to save cell grid, dT is not a number or not available.")
-            return
-        
-        try:
-            import pandas as pd
-            records = []
-            for t_idx, (Y, pos) in enumerate(zip(self.sim_history, self.cell_positions_history)):
-                T_write = t_idx // dT_step
-                dT_write = t_idx - (T_write * dT_step)
-                self.status_bar.showMessage(f"saving {t_idx},{T_write},{dT_write}")
-                for i in range(Y.shape[0]):
-                    row = [T_write, dT_write, pos[i,0], pos[i,1]] + list(Y[i, :])
-                    records.append(row)
-                self.progress_bar.setValue(55 + int(35*(t_idx/(T_val*dT_step))))
-            df = pd.DataFrame(records, columns=headers)
-            df.to_csv(csv_path, index=False)
-            try:
-                df.to_hdf(h5_path, key='cells', mode='w')
-            except Exception as e:
-                self.logger.warning(f"Failed to save HDF5: {e}")
-        except Exception as e:
-            self.status_bar.showMessage(f"Error saving to CSV/HDF5: {e}")
-            
+    def on_export_finished(self, folder):
         self.progress_bar.setValue(100)
+        self._reset_export_controls()
         self.status_bar.showMessage(f"Results saved to {folder}")
 
+    def on_export_cancelled(self):
+        self._reset_export_controls()
+        self.status_bar.showMessage("Export cancelled. Partially written files may remain.")
+
+    def on_export_error(self, error_message):
+        self._reset_export_controls()
+        self.status_bar.showMessage("Export failed. See app.log for details.")
+        self.logger.error(error_message)
+
     def save_config(self, save_path=None):
+        if save_path is not None and not isinstance(
+            save_path, (str, bytes, os.PathLike)
+        ):
+            save_path = None
         ode_text = self.ode_edit.toPlainText().strip()
         params_text = self.params_edit.toPlainText().strip()
         color_func_text = self.color_func_edit.toPlainText().strip()
@@ -929,14 +1027,6 @@ class MainWindow(QMainWindow):
             mech_func = local_vars.get('mechanics', None)
             if func is None:
                 raise Exception('ode not defined')
-            try:
-                from numba import jit
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    func = jit(forceobj=True)(func)
-            except ImportError:
-                pass
             return func, mech_func
         except Exception as e:
             self.status_bar.showMessage(f"ODE error: {e}")
@@ -944,6 +1034,12 @@ class MainWindow(QMainWindow):
             return local_vars['ode'], local_vars.get('mechanics', None)
 
     def closeEvent(self, event):
+        if getattr(self, 'export_worker', None) is not None and self.export_worker.isRunning():
+            self.export_worker.cancel()
+            if not self.export_worker.wait(3000):
+                self.status_bar.showMessage("Finishing export cancellation; close again shortly.")
+                event.ignore()
+                return
         self.save_config()
         super().closeEvent(event)
 

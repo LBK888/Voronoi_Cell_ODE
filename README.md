@@ -36,7 +36,9 @@ This tool allows you to design, preview, and simulate various cell arrangements 
 - **Multiple cell movement modes**: Combine random movement, move away from center, convergent extension, and neighbor repulsion.
 - **ODE and parameter editing**: Directly edit the ODE and simulation parameters in the GUI.
 - **Simulation and animation**: Run full simulations and preview or export animations and concentration plots.
-- **Batch download**: Export all results (parameters, video, figures) to a chosen folder.
+- **Per-step color scaling**: Preview and result colorbars automatically use the minimum and maximum values of the currently displayed step.
+- **Traceable raw data**: Every simulated cell has a persistent `cell_id`, including across cell division and apoptosis.
+- **Batch download**: Export the configuration, video, plots, Excel raw data, and HDF5 data to a chosen folder.
 - **Status bar and progress bar**: Always know the current state and progress.
 - **Robust logger**: All actions and errors are logged to file and shown in the GUI.
 
@@ -47,7 +49,7 @@ This tool allows you to design, preview, and simulate various cell arrangements 
 1. **Clone this repository**  
    ```bash
    git clone https://github.com/LBK888/Voronoi_Cell_ODE
-   cd voronoi_Notch
+   cd Voronoi_Cell_ODE
    ```
 
 2. **Install dependencies**  
@@ -126,12 +128,30 @@ If FFMPEG is not installed or not in your PATH, matplotlib will not be able to s
 
 ### 8. **Download Results**
 - Click **Download Results** to export:
-  - Simulation parameters (`params.txt`)
+  - Simulation configuration (`config.json`)
   - Animation video (`simulation.mp4`)
   - Concentration plot (`concentration.pdf`)
+  - Excel raw data (`cells.xlsx`)
+  - Compressed numerical data (`cells.h5`)
 - Choose your target folder in the dialog.
 
-### 9. **Status and Progress**
+#### Excel raw-data columns
+
+The `cells.xlsx` workbook contains one row per cell per simulation step:
+
+- `cell_id`: Persistent cell identifier. Existing cells keep their ID; daughter cells receive new IDs; surviving cells are not renumbered after apoptosis.
+- `T`: Whole simulation-time unit.
+- `step`: Substep within `T`.
+- `t`: Continuous step index calculated as `T * max_step + step`, where `max_step = round(1 / dT)` with a minimum value of 1.
+- `x`, `y`: Cell position at that step.
+- `Y[0]`, `Y[1]`, ...: ODE state-variable values.
+
+### 9. **Colorbar Range**
+
+- In the Preview and Results area, each colorbar follows the minimum and maximum of the currently displayed step.
+- Custom color functions that accept `global_bounds` remain compatible. For backward compatibility the parameter name is unchanged, but the supplied bounds now belong to the current step rather than the whole simulation.
+
+### 10. **Status and Progress**
 - The status bar (bottom) shows current actions, errors, and logger messages.
 - The progress bar indicates simulation and export progress.
 

@@ -3,7 +3,10 @@ from tqdm import tqdm
 from scipy.integrate import solve_ivp
 
 class BiophysicsModel:
-    def __init__(self, cell_count, params, ode_func, mechanics_func=None, init_Y=None, vor_grid=None, move_rule=None, random_strength=0.0, LaterInhib_switch=None):
+    def __init__(self, cell_count, params, ode_func, mechanics_func=None,
+                 init_Y=None, vor_grid=None, move_rule=None,
+                 random_strength=0.0, LaterInhib_switch=None,
+                 movement_plan=None):
         self.cell_count = cell_count
         self.params = params
         if ode_func is None:
@@ -16,6 +19,7 @@ class BiophysicsModel:
         self.vor_grid = vor_grid
         self.move_rule = move_rule
         self.random_strength = random_strength
+        self.movement_plan = movement_plan
         self.reset()
         self.LaterInhib_switch = LaterInhib_switch
 
@@ -23,6 +27,7 @@ class BiophysicsModel:
         self.Y = self.init_Y.copy()
         self.history = [self.Y.copy()]
         self.cell_positions_history = [self.vor_grid.cells.copy()] if self.vor_grid else []
+        self.cell_ids_history = [np.arange(len(self.Y), dtype=int)]
 
     def _rhs(self, t, y_flat):
         y = y_flat.reshape((self.cell_count, -1))
@@ -53,6 +58,9 @@ class BiophysicsModel:
         Y = y0.reshape((self.cell_count, -1))
         history = [Y.copy()]
         cell_positions_history = [self.vor_grid.cells.copy()] if self.vor_grid else []
+        cell_ids = np.arange(len(Y), dtype=int)
+        next_cell_id = len(cell_ids)
+        cell_ids_history = [cell_ids.copy()]
         
         total_steps = len(t_eval) - 1
         
@@ -94,23 +102,42 @@ class BiophysicsModel:
             if division_targets:
                 new_cells, new_Y = self.vor_grid.cell_proliferation(n=len(division_targets), mode=proliferation_mode, target_indices=division_targets, concentrations=Y)
                 Y = new_Y
+                if new_cells:
+                    new_ids = np.arange(
+                        next_cell_id, next_cell_id + len(new_cells), dtype=int
+                    )
+                    cell_ids = np.concatenate((cell_ids, new_ids))
+                    next_cell_id += len(new_cells)
             elif proliferation_steps == "all" or (isinstance(proliferation_steps, (list, tuple, set)) and i in proliferation_steps):
                 new_cells, new_Y = self.vor_grid.cell_proliferation(n=proliferation_n, mode=proliferation_mode, concentrations=Y)
                 Y = new_Y
+                if new_cells:
+                    new_ids = np.arange(
+                        next_cell_id, next_cell_id + len(new_cells), dtype=int
+                    )
+                    cell_ids = np.concatenate((cell_ids, new_ids))
+                    next_cell_id += len(new_cells)
                 
             # 細胞死亡
             if apoptosis_targets:
                 removed_cells, new_Y = self.vor_grid.cell_apoptosis(n=len(apoptosis_targets), mode=apoptosis_mode, target_indices=apoptosis_targets, concentrations=Y)
                 Y = new_Y
+                if removed_cells:
+                    cell_ids = np.delete(cell_ids, removed_cells)
             elif apoptosis_steps == "all" or (isinstance(apoptosis_steps, (list, tuple, set)) and i in apoptosis_steps):
                 removed_cells, new_Y = self.vor_grid.cell_apoptosis(n=apoptosis_n, mode=apoptosis_mode, concentrations=Y)
                 Y = new_Y
+                if removed_cells:
+                    cell_ids = np.delete(cell_ids, removed_cells)
                 
             history.append(Y.copy())
+            cell_ids_history.append(cell_ids.copy())
             
             # 細胞移動
             if forces is not None:
                 self.vor_grid.move_cells(lambda cells: cells + forces, self.random_strength)
+            elif self.movement_plan is not None:
+                self.vor_grid.apply_movement(self.movement_plan)
             elif self.move_rule is not None:
                 self.vor_grid.move_cells(self.move_rule, self.random_strength)
             elif self.random_strength > 0:
@@ -128,6 +155,7 @@ class BiophysicsModel:
         cell_positions_arr = np.empty(len(cell_positions_history), dtype=object)
         for idx, arr in enumerate(cell_positions_history):
             cell_positions_arr[idx] = arr
+        self.cell_ids_history = cell_ids_history
         
         return history_arr, cell_positions_arr
 

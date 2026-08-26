@@ -97,11 +97,8 @@ params = {
 Matplotlib 提供了非常多種色彩對應表，您可以在以下連結中挑選並預覽：
 👉 **[Matplotlib Colormaps 官方文件](https://matplotlib.org/stable/users/explain/colors/colormaps.html)**
 
-### Normalization (標準化) 方式
-因為濃度的數值範圍變化很大，在對應到 Colormap 之前必須先被標準化到 `[0, 1]` 的區間。您可以選擇**單步標準化 (Per-Frame)** 或 **全域標準化 (Globally)**。
-
-#### 寫法 A: 全域標準化 (推薦用於需要精準對齊 Colorbar 時)
-如果您希望動畫中的細胞顏色能夠與右側靜態的 Colorbar 完全一致，您應該使用 `global_bounds` 參數。系統會預先計算整個模擬過程中的絕對最大與最小值，並將其傳入函數中。
+### 單步標準化 (Per-Frame)
+因為濃度的數值範圍變化很大，在對應到 Colormap 之前必須先被標準化到 `[0, 1]` 的區間。Preview 與 Results 的 Colorbar 現在會跟隨目前 step 的最小值與最大值。可使用 `global_bounds` 參數直接取得目前 step 的範圍；此參數保留舊名稱是為了相容既有設定檔。
 
 ```python
 import numpy as np
@@ -109,20 +106,19 @@ import matplotlib.pyplot as plt
 
 def color_func(Y, mode='polygon', global_bounds=None):
     if mode == 'polygon':
-        vmin, vmax = global_bounds[0] # 取得變數 0 的全域極值
+        vmin, vmax = global_bounds[0] # 取得變數 0 在目前 step 的極值
         norm = (Y[:,0] - vmin) / (vmax - vmin + 1e-8)
         return plt.cm.plasma(norm)
             
     elif mode == 'center':
-        vmin, vmax = global_bounds[1] # 取得變數 1 的全域極值
+        vmin, vmax = global_bounds[1] # 取得變數 1 在目前 step 的極值
         norm = (Y[:,1] - vmin) / (vmax - vmin + 1e-8)
         return plt.cm.viridis(norm)
             
     return None
 ```
 
-#### 寫法 B: 單步標準化 (用於最大化動態視覺對比)
-如果您不在乎絕對數值，只希望在每一個影格中都能最大化細胞之間的色彩對比，您可以直接使用當前陣列 `Y` 的 `min()` 與 `max()` 進行標準化。
+也可以直接從目前 step 的 `Y` 計算相同範圍：
 
 ```python
 def color_func(Y, mode='polygon', global_bounds=None):

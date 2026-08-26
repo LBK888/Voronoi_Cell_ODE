@@ -1,5 +1,19 @@
+from collections import defaultdict
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.spatial import Voronoi, QhullError
+
+
+@dataclass(frozen=True)
+class MovementPlan:
+    """Cell movement settings consumed by VoronoiGrid."""
+
+    random_strength: float = 0.0
+    away_strength: float = 0.0
+    convergent_strength: float = 0.0
+    repulsion_strength: float = 0.0
+    vertex_strength: float = 0.0
 
 class VoronoiGrid:
     def __init__(self, grid_shape=(2,1), cell_dist=1.0, pos_rand=0.0, mode='honeycomb', custom_cells=None, import_path=None):
@@ -18,6 +32,45 @@ class VoronoiGrid:
         self.custom_cells = custom_cells
         self.import_path = import_path
         self._safe_update_voronoi(self._init_cells())
+
+    @classmethod
+    def from_cells(cls, cells, cell_dist=1.0):
+        """Create a layout from existing coordinates through the normal safety seam."""
+        cells = np.asarray(cells, dtype=float)
+        return cls(
+            grid_shape=(len(cells), 1),
+            cell_dist=cell_dist,
+            mode='custom',
+            custom_cells=cells,
+        )
+
+    def copy_cells(self):
+        return self.cells.copy()
+
+    def replace_cells(self, cells):
+        cells = np.asarray(cells, dtype=float)
+        if cells.ndim != 2 or cells.shape[1] != 2:
+            raise ValueError('cells must have shape (n, 2)')
+        if len(cells) < 3:
+            raise ValueError('at least three cells are required for a Voronoi layout')
+        self._safe_update_voronoi(cells)
+
+    def add_cell(self, position):
+        position = np.asarray(position, dtype=float)
+        if position.shape != (2,):
+            raise ValueError('position must have shape (2,)')
+        self.replace_cells(np.vstack([self.cells, position]))
+        return len(self.cells) - 1
+
+    def move_cell(self, index, position):
+        cells = self.copy_cells()
+        cells[index] = np.asarray(position, dtype=float)
+        self.replace_cells(cells)
+
+    def remove_cell(self, index):
+        if len(self.cells) <= 3:
+            raise ValueError('a Voronoi layout must keep at least three cells')
+        self.replace_cells(np.delete(self.cells, index, axis=0))
 
     def _safe_update_voronoi(self, new_cells, max_retries=3):
         import logging
@@ -128,6 +181,120 @@ class VoronoiGrid:
             new_cells += (np.random.rand(*new_cells.shape)-0.5)*2*self.cell_dist*random_strength
         self._safe_update_voronoi(new_cells) 
 
+    def finite_ridge_neighbors(self, max_ridge_length=2.0):
+        """Return finite Voronoi neighbors weighted by their shared ridge length."""
+        neighbors = defaultdict(dict)
+        for (p1, p2), ridge_vertices in zip(self.vor.ridge_points, self.vor.ridge_vertices):
+            if not all(vertex >= 0 for vertex in ridge_vertices):
+                continue
+            points = self.vor.vertices[ridge_vertices]
+            length = np.linalg.norm(points[0] - points[1])
+            if max_ridge_length is not None and length > max_ridge_length:
+                continue
+            neighbors[p1][p2] = length
+            neighbors[p2][p1] = length
+        return neighbors
+
+    def apply_movement(self, plan):
+        """Apply a complete movement plan while keeping topology updates local."""
+        if not isinstance(plan, MovementPlan):
+            raise TypeError('plan must be a MovementPlan')
+        if plan.random_strength:
+            self.move_cells(random_strength=plan.random_strength)
+        if plan.away_strength:
+            self.move_cells(lambda cells: self._move_away(cells, plan.away_strength))
+        if plan.convergent_strength:
+            self._safe_update_voronoi(self._convergent_extension(plan.convergent_strength))
+        if plan.repulsion_strength:
+            self._safe_update_voronoi(self._repel_neighbors(plan.repulsion_strength))
+        if plan.vertex_strength:
+            self._safe_update_voronoi(self._vertex_movement(plan.vertex_strength))
+
+    def _outer_cell_indices(self):
+        outer = set()
+        for index, region_index in enumerate(self.vor.point_region):
+            region = self.vor.regions[region_index]
+            if not region or any(vertex < 0 for vertex in region):
+                outer.add(index)
+        return outer
+
+    @staticmethod
+    def _move_away(cells, strength):
+        center = np.mean(cells, axis=0)
+        vectors = cells - center
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-8
+        return cells + (vectors / norms) * strength
+
+    def _ridge_neighbor_sets(self):
+        neighbors = defaultdict(set)
+        for p1, p2 in self.vor.ridge_points:
+            neighbors[p1].add(p2)
+            neighbors[p2].add(p1)
+        return neighbors
+
+    def _convergent_extension(self, strength, max_force=1.0):
+        cells = self.copy_cells()
+        outer = self._outer_cell_indices()
+        center_x, center_y = np.mean(cells, axis=0)
+        new_cells = cells.copy()
+        for index in range(len(cells)):
+            if index in outer:
+                continue
+            force = np.array([
+                np.sign(cells[index, 0] - center_x) * strength / 4,
+                np.sign(center_y - cells[index, 1]) * strength,
+            ])
+            norm = np.linalg.norm(force)
+            if norm > max_force:
+                force = force / norm * max_force
+            new_cells[index] += force
+        return new_cells
+
+    def _repel_neighbors(self, strength, min_dist=1.5, max_force=1.0):
+        cells = self.copy_cells()
+        neighbors = self._ridge_neighbor_sets()
+        outer = self._outer_cell_indices()
+        new_cells = cells.copy()
+        for index in range(len(cells)):
+            if index in outer:
+                continue
+            force = np.zeros(2)
+            for neighbor in neighbors[index]:
+                vector = cells[index] - cells[neighbor]
+                distance = np.linalg.norm(vector)
+                if 1e-8 < distance < min_dist:
+                    force += (vector / distance) * (strength * (min_dist - distance))
+            norm = np.linalg.norm(force)
+            if norm > max_force:
+                force = force / norm * max_force
+            new_cells[index] += force
+        return new_cells
+
+    def _vertex_movement(self, adhesion_strength, repulsion_strength=0.1,
+                         min_dist=1.5, max_force=1.0):
+        cells = self.copy_cells()
+        neighbors = self.finite_ridge_neighbors(max_ridge_length=None)
+        outer = self._outer_cell_indices()
+        new_cells = cells.copy()
+        for index in range(len(cells)):
+            if index in outer:
+                continue
+            force = np.zeros(2)
+            for neighbor, edge_length in neighbors[index].items():
+                vector = cells[neighbor] - cells[index]
+                distance = np.linalg.norm(vector)
+                if distance < 1e-8:
+                    continue
+                direction = vector / distance
+                force += adhesion_strength * edge_length * direction
+                if distance < min_dist:
+                    force -= repulsion_strength * ((min_dist - distance) / distance) * direction
+            norm = np.linalg.norm(force)
+            if norm > max_force:
+                force = force / norm * max_force
+            new_cells[index] += force
+        return new_cells
+
     def get_inner_cell_indices(self):
         """
         回傳內圈細胞的 index。
@@ -136,11 +303,7 @@ class VoronoiGrid:
         """
         vor = self.vor
         # 1. 找出所有外圈細胞（region 含 -1）
-        outer_set = set()
-        for i, region_index in enumerate(vor.point_region):
-            region = vor.regions[region_index]
-            if not region or any(v < 0 for v in region):
-                outer_set.add(i)
+        outer_set = self._outer_cell_indices()
         # 2. 找出所有與外圈細胞相鄰的細胞
         neighbor_set = set()
         for p1, p2 in vor.ridge_points:

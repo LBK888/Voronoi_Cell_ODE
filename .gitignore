@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.py[cod]
+app.log
+gen.py
+out.txt
+diff_output.txt

@@ -1,21 +1,15 @@
-import numpy as np
-from scipy.spatial import Voronoi
 from collections import defaultdict
+
+import numpy as np
 import matplotlib.pyplot as plt
 from numba import njit
+from scipy.spatial import Voronoi
+
+from voronoi_grid import VoronoiGrid
 
 def get_voronoi_neighbors_wo_outer(cells):
-    vor = Voronoi(cells)
-    neighbors = defaultdict(dict)
-    for (p1, p2), ridge_vertices in zip(vor.ridge_points, vor.ridge_vertices):
-        if all(v >= 0 for v in ridge_vertices):
-            pts = vor.vertices[ridge_vertices]
-            length = np.linalg.norm(pts[0] - pts[1])
-            if length > 2:
-                continue
-            neighbors[p1][p2] = length
-            neighbors[p2][p1] = length
-    return neighbors
+    """Compatibility adapter for user-authored ODE code."""
+    return VoronoiGrid.from_cells(cells).finite_ridge_neighbors()
 
 @njit
 def diffusion_weighted_mean(values, positions, i, sigma):

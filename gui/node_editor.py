@@ -1,7 +1,9 @@
+import ast
 import json
+from dataclasses import dataclass
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QMenu, QFileDialog, QMessageBox, QInputDialog,
-    QWidget, QListWidget, QListWidgetItem, QSplitter, QLabel
+    QWidget, QListWidget, QListWidgetItem, QSplitter, QLabel, QFrame
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
@@ -11,6 +13,15 @@ from .node_types import GeneNode, CellNode, MathNode, TextNode, VariableReadNode
 from .node_parser import PythonToNodeParser, NodeToPythonGenerator
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
 from PyQt6.QtCore import QRectF, QPointF, QTimer
+
+
+@dataclass(frozen=True)
+class NodeEditorDocument:
+    """The complete model payload exchanged with the visual node editor."""
+
+    ode_source: str = ""
+    params_source: str = ""
+    color_func_source: str = ""
 
 class MinimapWidget(QWidget):
     def __init__(self, view, parent=None):
@@ -133,7 +144,7 @@ class VariableSidebar(QWidget):
         self.layout.setContentsMargins(0, 0, 0, 0)
         
         self.label = QLabel("Variables & Constants")
-        self.label.setStyleSheet("font-weight: bold; color: #ddd; padding: 5px;")
+        self.label.setObjectName("sidebarTitle")
         self.layout.addWidget(self.label)
         
         self.list_widget = QListWidget()
@@ -177,22 +188,47 @@ class VariableSidebar(QWidget):
 
 class NodeEditorDialog(QDialog):
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, document=None):
         super().__init__(parent)
-        self.setWindowTitle("Node-based ODE Editor")
+        self._source_document = document or NodeEditorDocument()
+        self._result_document = None
+        self.setWindowTitle("Visual Node Editor")
         self.resize(1300, 800)
+        self.setMinimumSize(960, 640)
         
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 12, 14, 12)
+        main_layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        header_copy = QVBoxLayout()
+        title = QLabel("Visual Node Editor")
+        title.setObjectName("editorTitle")
+        subtitle = QLabel(
+            "Build the ODE as a graph. Parameters and color mapping travel with the model."
+        )
+        subtitle.setObjectName("editorSubtitle")
+        subtitle.setWordWrap(True)
+        header_copy.addWidget(title)
+        header_copy.addWidget(subtitle)
+        header.addLayout(header_copy)
+        header.addStretch(1)
+        model_badge = QLabel("CURRENT MODEL")
+        model_badge.setObjectName("modelBadge")
+        header.addWidget(model_badge)
+        main_layout.addLayout(header)
         
-        # Toolbar
-        toolbar = QHBoxLayout()
+        toolbar_frame = QFrame()
+        toolbar_frame.setObjectName("toolbarFrame")
+        toolbar = QHBoxLayout(toolbar_frame)
+        toolbar.setContentsMargins(8, 6, 8, 6)
         
         self.add_node_btn = QPushButton("Add Node...")
-        self.apply_ode_btn = QPushButton("Apply ODE Text to Nodes")
-        self.load_config_btn = QPushButton("Load Config Template")
-        self.export_btn = QPushButton("Export JSON")
-        self.import_btn = QPushButton("Import JSON")
-        self.generate_code_btn = QPushButton("Generate ODE Code & Apply")
+        self.add_node_btn.setObjectName("accentButton")
+        self.apply_ode_btn = QPushButton("Reload Current Model")
+        self.load_config_btn = QPushButton("Open Config...")
+        self.export_btn = QPushButton("Export Graph")
+        self.import_btn = QPushButton("Import Graph")
         
         self.routing_btn = QPushButton("Style: Spline")
         self.scene = NodeScene(self)
@@ -200,17 +236,17 @@ class NodeEditorDialog(QDialog):
         
         toolbar.addWidget(self.add_node_btn)
         toolbar.addWidget(self.apply_ode_btn)
+        toolbar.addStretch(1)
         toolbar.addWidget(self.load_config_btn)
-        toolbar.addWidget(self.export_btn)
         toolbar.addWidget(self.import_btn)
-        toolbar.addWidget(self.generate_code_btn)
+        toolbar.addWidget(self.export_btn)
         toolbar.addWidget(self.routing_btn)
-        toolbar.addStretch()
-        main_layout.addLayout(toolbar)
+        main_layout.addWidget(toolbar_frame)
         
         # Splitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter)
+        splitter.setChildrenCollapsible(False)
+        main_layout.addWidget(splitter, 1)
         
         # Scene & View
         self.scene.setSceneRect(-2000, -2000, 4000, 4000)
@@ -224,11 +260,26 @@ class NodeEditorDialog(QDialog):
         splitter.addWidget(self.view)
         
         self.sidebar = VariableSidebar(self.scene, self)
+        self.sidebar.setObjectName("sidePanel")
+        self.sidebar.setMinimumWidth(210)
         splitter.addWidget(self.sidebar)
         splitter.setSizes([1000, 250])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
         
         # Minimap
         self.minimap = MinimapWidget(self.view, self.view)
+
+        footer = QHBoxLayout()
+        self.status_label = QLabel()
+        self.status_label.setObjectName("editorStatus")
+        self.close_btn = QPushButton("Close")
+        self.generate_code_btn = QPushButton("Apply to Model")
+        self.generate_code_btn.setObjectName("primaryButton")
+        footer.addWidget(self.status_label, 1)
+        footer.addWidget(self.close_btn)
+        footer.addWidget(self.generate_code_btn)
+        main_layout.addLayout(footer)
         
         # Connections
         self.add_node_btn.clicked.connect(self.show_add_menu)
@@ -238,6 +289,7 @@ class NodeEditorDialog(QDialog):
         self.import_btn.clicked.connect(self.import_json)
         self.generate_code_btn.clicked.connect(self.generate_code)
         self.routing_btn.clicked.connect(self.toggle_routing)
+        self.close_btn.clicked.connect(self.reject)
 
         # Setup Parser/Generator
         self.parser = PythonToNodeParser(self.scene)
@@ -248,7 +300,110 @@ class NodeEditorDialog(QDialog):
         self.view.resizeEvent = self.view_resizeEvent
         
         self.keyPressEvent = self.handle_shortcuts
-        
+
+        self.add_node_btn.setToolTip("Add a computational or control-flow node")
+        self.apply_ode_btn.setToolTip(
+            "Discard graph edits and rebuild from the model that opened this window"
+        )
+        self.load_config_btn.setToolTip("Load ODE, parameters and color mapping from a config file")
+        self.import_btn.setToolTip("Import a previously exported node graph")
+        self.export_btn.setToolTip("Save this node graph without applying it to the model")
+        self.routing_btn.setToolTip("Switch connection paths between spline and orthogonal")
+        self.generate_code_btn.setToolTip(
+            "Generate Python from this graph and return all model fields to the main window"
+        )
+
+        self._apply_styles()
+        if self._source_document.ode_source.strip():
+            self.load_document(self._source_document)
+        else:
+            self._set_status("Empty graph - add a node or open a config.", "info")
+
+    def _apply_styles(self):
+        self.setStyleSheet("""
+            QDialog { background: #f3f5f7; color: #374151; }
+            QLabel#editorTitle { font-size: 20px; font-weight: 650; color: #25313c; }
+            QLabel#editorSubtitle { color: #52606d; }
+            QLabel#modelBadge {
+                color: #6D3BBF; background: #efe8fb; border: 1px solid #d9c9f2;
+                border-radius: 9px; padding: 3px 8px; font-size: 9px; font-weight: 700;
+            }
+            QFrame#toolbarFrame {
+                background: white; border: 1px solid #d8dee5; border-radius: 6px;
+            }
+            QPushButton {
+                min-height: 28px; padding: 2px 11px; color: #374151;
+                background: white; border: 1px solid #cbd5df; border-radius: 4px;
+            }
+            QPushButton:hover { background: #eef3f7; border-color: #9aa8b6; }
+            QPushButton#accentButton {
+                color: #1A6FB5; border-color: #1A6FB5; font-weight: 600;
+            }
+            QPushButton#accentButton:hover { background: #e8f2fb; }
+            QPushButton#primaryButton {
+                min-width: 145px; color: white; background: #1A6FB5;
+                border-color: #1A6FB5; font-weight: 650;
+            }
+            QPushButton#primaryButton:hover { background: #145b96; }
+            QWidget#sidePanel {
+                background: white; border: 1px solid #d8dee5; border-radius: 5px;
+            }
+            QLabel#sidebarTitle { color: #25313c; font-weight: 650; padding: 8px 8px 3px 8px; }
+            QListWidget {
+                color: #374151; background: white; border: none; padding: 4px;
+            }
+            QListWidget::item { padding: 5px; border-radius: 3px; }
+            QListWidget::item:selected { color: white; background: #1A6FB5; }
+            QLabel#editorStatus { color: #52606d; padding-left: 2px; }
+            QLabel#editorStatus[statusKind="success"] { color: #0D8F6B; }
+            QLabel#editorStatus[statusKind="warning"] { color: #B45309; }
+            QLabel#editorStatus[statusKind="error"] { color: #C4211C; }
+            QMenu {
+                color: #374151; background: white; border: 1px solid #cbd5df; padding: 4px;
+            }
+            QMenu::item { padding: 6px 22px 6px 10px; }
+            QMenu::item:selected { color: white; background: #1A6FB5; }
+        """)
+
+    def _set_status(self, message, kind="info"):
+        self.status_label.setText(message)
+        self.status_label.setProperty("statusKind", kind)
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+
+    def result_document(self):
+        return self._result_document
+
+    def load_document(self, document):
+        self.parser.parse_ode_string(
+            document.ode_source,
+            document.params_source,
+            document.color_func_source,
+        )
+        self.scene.arrange_nodes()
+        self._source_document = document
+        node_count = sum(
+            1 for item in self.scene.items() if hasattr(item, "serialize")
+        )
+        self._set_status(
+            f"Loaded current model into {node_count} nodes. Graph edits are not applied yet.",
+            "success",
+        )
+
+    def build_document(self):
+        ode_source = self.generator.generate_ode()
+        params_source = self._source_document.params_source
+        color_func_source = self._source_document.color_func_source
+        for item in self.scene.items():
+            if type(item).__name__ == "OdeBeginNode":
+                params_source = getattr(item, "params_str", params_source)
+                color_func_source = getattr(item, "color_func_str", color_func_source)
+                break
+        return NodeEditorDocument(
+            ode_source=ode_source,
+            params_source=params_source,
+            color_func_source=color_func_source,
+        )
 
     def view_dragEnterEvent(self, event):
         if event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
@@ -291,22 +446,26 @@ class NodeEditorDialog(QDialog):
         filename, _ = QFileDialog.getOpenFileName(self, "Load Config JSON", "", "JSON Files (*.json)")
         if filename:
             try:
-                import json
                 with open(filename, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
                 ode_str = data.get('ode', '')
                 if not ode_str:
                     ode_str = data.get('ode_code', '')
-                params_dict = data.get('params', {})
-                # Format params exactly as the editor does (as a stringified dict or similar)
+                params_value = data.get('params', '')
                 import pprint
-                params_str = pprint.pformat(params_dict) if isinstance(params_dict, dict) else str(params_dict)
+                params_str = "params = " + pprint.pformat(params_value, width=60) if isinstance(params_value, dict) else str(params_value)
                 color_func_str = data.get('color_func', '')
-                
-                self.parser.parse_ode_string(ode_str, params_str, color_func_str)
-                QMessageBox.information(self, "Success", "Loaded config and parsed to nodes successfully.")
+
+                document = NodeEditorDocument(
+                    ode_source=ode_str,
+                    params_source=params_str,
+                    color_func_source=color_func_str,
+                )
+                self.load_document(document)
+                self._set_status("Config loaded. Review the graph, then apply it to the model.", "success")
             except Exception as e:
+                self._set_status(f"Could not load config: {e}", "error")
                 QMessageBox.critical(self, "Error", f"Failed to load config: {str(e)}")
 
     def toggle_routing(self):
@@ -321,6 +480,7 @@ class NodeEditorDialog(QDialog):
         for item in self.scene.items():
             if isinstance(item, NodeEdge):
                 item.update_path()
+        self._set_status(f"Connection style: {self.scene.routing_style}.", "info")
 
     def view_resizeEvent(self, event):
         super(NodeView, self.view).resizeEvent(event)
@@ -341,14 +501,16 @@ class NodeEditorDialog(QDialog):
         if isinstance(pos, bool):
             pos = None
         menu = QMenu(self)
-        menu.setStyleSheet("QMenu { background-color: #333; color: white; padding: 5px; }")
         
-        from .node_types import GeneNode, CellNode, MathNode, TextNode, ParameterNode, StateNode, DerivativeNode, PythonCodeNode
+        from .node_types import (GeneNode, CellNode, MathNode, TextNode, ParameterNode, StateNode,
+                                 DerivativeNode, PythonCodeNode, AssignmentNode, ForLoopNode)
         nodes = {
             "Gene (Legacy)": GeneNode,
             "Parameter": ParameterNode,
             "State (Y)": StateNode,
             "Derivative (dY)": DerivativeNode,
+            "Assign": AssignmentNode,
+            "For Loop": ForLoopNode,
             "Math": MathNode,
             "Python Code": PythonCodeNode,
             "Cell": CellNode,
@@ -369,77 +531,78 @@ class NodeEditorDialog(QDialog):
         view_center = self.view.mapToScene(self.view.viewport().rect().center())
         node.setPos(view_center.x() - node.width/2, view_center.y() - node.height/2)
         self.scene.addItem(node)
+        self._set_status(f"Added {type(node).__name__}. Apply when the graph is ready.", "info")
 
     def apply_ode_text(self):
         reply = QMessageBox.question(
-            self, "Apply ODE Text", 
-            "This will replace your current node graph with parsed text. Continue?",
+            self, "Reload Current Model",
+            "Discard graph edits and rebuild this graph from the model that opened the editor?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            if self.parent():
-                ode_str = self.parent().ode_edit.toPlainText() if hasattr(self.parent(), 'ode_edit') else ""
-                params_str = self.parent().params_edit.toPlainText() if hasattr(self.parent(), 'params_edit') else ""
-                color_func_str = self.parent().color_func_edit.toPlainText() if hasattr(self.parent(), 'color_func_edit') else ""
-                
-                self.parser.parse_ode_string(ode_str, params_str, color_func_str)
-                
-                # Verification
-                generated_ode = self.generator.generate_ode().strip()
-                import re
-                def normalize(s):
-                    return re.sub(r'\s+', '', s) if s else ""
-                
-                gen_params = ""
-                gen_color = ""
-                for item in self.scene.items():
-                    if type(item).__name__ == "OdeBeginNode":
-                        gen_params = getattr(item, "params_str", "")
-                        gen_color = getattr(item, "color_func_str", "")
-                        break
-                        
-                mismatch = []
-                if normalize(generated_ode) != normalize(ode_str):
-                    mismatch.append("ODE Text")
-                if normalize(gen_params) != normalize(params_str):
-                    mismatch.append("Parameters")
-                if normalize(gen_color) != normalize(color_func_str):
-                    mismatch.append("Color Function")
-                    
-                if mismatch:
-                    fields = ", ".join(mismatch)
-                    QMessageBox.warning(self, "Verification Warning", f"The generated graph differs from the original text in: {fields}!\nSome structures might be missing or altered.")
-                else:
-                    if hasattr(self.parent(), 'status_bar'):
-                        self.parent().status_bar.showMessage("Parsed ODE to Nodes (Verified matching).")
+            self.load_document(self._source_document)
 
     def export_json(self):
         filename, _ = QFileDialog.getSaveFileName(self, "Export Node Graph", "", "JSON Files (*.json)")
         if filename:
             try:
                 data = self.generator.serialize_scene()
-                with open(filename, 'w') as f:
+                with open(filename, 'w', encoding='utf-8') as f:
                     f.write(data)
-                QMessageBox.information(self, "Success", "Node graph exported successfully.")
+                self._set_status("Node graph exported.", "success")
             except Exception as e:
+                self._set_status(f"Could not export graph: {e}", "error")
                 QMessageBox.critical(self, "Error", f"Failed to export: {str(e)}")
 
     def import_json(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Import Node Graph", "", "JSON Files (*.json)")
         if filename:
             try:
-                with open(filename, 'r') as f:
+                with open(filename, 'r', encoding='utf-8') as f:
                     data = f.read()
                 self.generator.deserialize_scene(data)
-                QMessageBox.information(self, "Success", "Node graph imported successfully.")
+                node_count = sum(
+                    1 for item in self.scene.items() if hasattr(item, "serialize")
+                )
+                self._set_status(
+                    f"Imported {node_count} nodes. Review the graph before applying.",
+                    "success",
+                )
             except Exception as e:
+                self._set_status(f"Could not import graph: {e}", "error")
                 QMessageBox.critical(self, "Error", f"Failed to import: {str(e)}")
 
     def generate_code(self):
-        code = self.generator.generate_ode()
-        if self.parent():
-            self.parent().ode_edit.setPlainText(code)
-            self.parent().status_bar.showMessage("ODE code updated from Node Editor")
+        try:
+            result = self.build_document()
+            ast.parse(result.ode_source)
+        except Exception as e:
+            self._set_status(f"Generated ODE is invalid: {e}", "error")
+            QMessageBox.critical(
+                self,
+                "Cannot Apply Model",
+                f"The generated ODE is not valid Python:\n\n{e}",
+            )
+            return
+
+        warnings = getattr(self.generator, "warnings", [])
+        if warnings:
+            preview = "\n".join(warnings[:5])
+            if len(warnings) > 5:
+                preview += f"\n...and {len(warnings) - 5} more."
+            reply = QMessageBox.warning(
+                self,
+                "Generation Warnings",
+                f"The graph generated code with warnings:\n\n{preview}\n\nApply anyway?",
+                QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Apply:
+                self._set_status("Apply cancelled; resolve graph warnings first.", "warning")
+                return
+
+        self._result_document = result
+        self._set_status("Model generated and ready for the main window.", "success")
         self.accept()
 
     def handle_shortcuts(self, event):

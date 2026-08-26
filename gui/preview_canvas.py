@@ -3,6 +3,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
 from PyQt6.QtCore import pyqtSignal
+from voronoi_grid import VoronoiGrid
 
 class PreviewCanvas(QWidget):
     cell_count_changed = pyqtSignal(int)
@@ -14,7 +15,7 @@ class PreviewCanvas(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.canvas)
         self.setLayout(layout)
-        self.cells = np.array([])
+        self.grid = None
         self.selected_idx = None
         self.dragging = False
 
@@ -24,27 +25,28 @@ class PreviewCanvas(QWidget):
         plot_func(ax, *args, **kwargs)
         self.canvas.draw()
 
-    def set_cells(self, cells):
-        self.cells = np.array(cells)
+    def set_grid(self, grid):
+        if not isinstance(grid, VoronoiGrid):
+            raise TypeError('grid must be a VoronoiGrid')
+        self.grid = grid
         self.selected_idx = None
         self.dragging = False
         self.update_plot()
 
-    def get_cells(self):
-        return self.cells.copy()
+    def get_grid(self):
+        return self.grid
 
     def update_plot(self):
         def plot_func(ax):
-            from scipy.spatial import Voronoi, voronoi_plot_2d
-            if len(self.cells) < 3:
+            from scipy.spatial import voronoi_plot_2d
+            if self.grid is None:
                 ax.clear()
-                ax.plot(self.cells[:,0], self.cells[:,1], 'o', color='red')
-                ax.set_aspect('equal')
                 return
-            vor = Voronoi(self.cells)
-            voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='black')
-            ax.plot(self.cells[:,0], self.cells[:,1], 'o', color='red')
+            cells = self.grid.copy_cells()
+            voronoi_plot_2d(self.grid.vor, ax=ax, show_vertices=False, line_colors='black')
+            ax.plot(cells[:,0], cells[:,1], 'o', color='red')
             ax.set_aspect('equal')
+            ax.set_title('Voronoi Preview')
         self.plot(plot_func)
 
     # 只用 mpl 事件
@@ -54,28 +56,29 @@ class PreviewCanvas(QWidget):
         self.canvas.mpl_connect('button_release_event', self.on_mpl_release)
 
     def on_mpl_click(self, event):
-        if event.inaxes is None:
+        if event.inaxes is None or self.grid is None:
             return
         pos = np.array([event.xdata, event.ydata])
         idx = self._find_nearest_cell(pos)
+        cells = self.grid.copy_cells()
         if event.button == 1:
-            if idx is not None and np.linalg.norm(self.cells[idx] - pos) < 0.5:
+            if idx is not None and np.linalg.norm(cells[idx] - pos) < 0.5:
                 self.selected_idx = idx
                 self.dragging = True
             else:
-                self.cells = np.vstack([self.cells, pos])
+                self.grid.add_cell(pos)
                 self.update_plot()
-                self.cell_count_changed.emit(len(self.cells))
+                self.cell_count_changed.emit(len(self.grid.cells))
         elif event.button == 3:
-            if idx is not None and len(self.cells) > 3:
-                self.cells = np.delete(self.cells, idx, axis=0)
+            if idx is not None and len(cells) > 3:
+                self.grid.remove_cell(idx)
                 self.update_plot()
-                self.cell_count_changed.emit(len(self.cells))
+                self.cell_count_changed.emit(len(self.grid.cells))
 
     def on_mpl_motion(self, event):
         if self.dragging and self.selected_idx is not None and event.inaxes is not None:
             pos = np.array([event.xdata, event.ydata])
-            self.cells[self.selected_idx] = pos
+            self.grid.move_cell(self.selected_idx, pos)
             self.update_plot()
 
     def on_mpl_release(self, event):
@@ -83,9 +86,9 @@ class PreviewCanvas(QWidget):
         self.selected_idx = None
 
     def _find_nearest_cell(self, pos):
-        if len(self.cells) == 0:
+        if self.grid is None:
             return None
-        dists = np.linalg.norm(self.cells - pos, axis=1)
+        dists = np.linalg.norm(self.grid.cells - pos, axis=1)
         idx = np.argmin(dists)
         return idx
 

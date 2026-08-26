@@ -268,6 +268,66 @@ class NodeScene(QGraphicsScene):
     def arrange_nodes(self):
         nodes = [item for item in self.items() if hasattr(item, 'inputs') and hasattr(item, 'outputs')]
         if not nodes: return
+
+        sequence_nodes = sorted(
+            [n for n in nodes if hasattr(n, "sequence_index")],
+            key=lambda n: getattr(n, "sequence_index")
+        )
+        if sequence_nodes:
+            main_x = 450
+            y_pos = 100
+            padding = 70
+            for n in sequence_nodes:
+                n.setPos(main_x, y_pos)
+                if hasattr(n, 'boundingRect'):
+                    y_pos += n.boundingRect().height() + padding
+
+            data_nodes = [n for n in nodes if not hasattr(n, "sequence_index")]
+            layers = {}
+            visiting = set()
+
+            def get_data_layer(node):
+                if node in layers:
+                    return layers[node]
+                if node in visiting:
+                    return 0
+                visiting.add(node)
+                max_parent = -1
+                for sock in getattr(node, 'inputs', []):
+                    for edge in sock.edges:
+                        if edge.edge_type == "Sequence":
+                            continue
+                        p_sock = edge.source_socket if edge.source_socket and edge.source_socket.node != node else edge.dest_socket
+                        if p_sock and p_sock.node in data_nodes:
+                            max_parent = max(max_parent, get_data_layer(p_sock.node))
+                visiting.remove(node)
+                layers[node] = max_parent + 1
+                return layers[node]
+
+            for n in data_nodes:
+                get_data_layer(n)
+
+            layer_groups = {}
+            for n, layer in layers.items():
+                layer_groups.setdefault(layer, []).append(n)
+
+            max_layer = max(layer_groups.keys(), default=0)
+            col_spacing = 280
+            for layer in sorted(layer_groups.keys()):
+                x_pos = main_x - (max_layer - layer + 1) * col_spacing
+                y_pos = 100
+                layer_nodes = sorted(layer_groups[layer], key=lambda n: (n.pos().y(), type(n).__name__))
+                for n in layer_nodes:
+                    n.setPos(x_pos, y_pos)
+                    if hasattr(n, 'boundingRect'):
+                        y_pos += n.boundingRect().height() + 45
+
+            for n in nodes:
+                for sock in getattr(n, 'inputs', []) + getattr(n, 'outputs', []):
+                    for edge in sock.edges:
+                        if hasattr(edge, 'update_path'):
+                            edge.update_path()
+            return
         
         layers = {}
         visiting = set()

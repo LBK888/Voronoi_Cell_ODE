@@ -8,6 +8,12 @@ from scipy.spatial import voronoi_plot_2d, Voronoi
 import numpy as np
 import os
 
+
+class ExportCancelled(Exception):
+    """Raised when a background video export is cancelled."""
+
+    pass
+
 class VoronoiAnimator:
     def __init__(self, vor_grid, sim_history, color_func=None, cell_positions_history=None, show_ticks=False, dynamic_range=True, params=None, color_func_str=None):
         """
@@ -28,30 +34,88 @@ class VoronoiAnimator:
         self.color_func_str = color_func_str
         self.xlim = None
         self.ylim = None
-        
-        # Pre-calculate global min/max bounds for all variables
-        self.global_bounds = []
-        if self.sim_history and len(self.sim_history) > 0 and len(self.sim_history[0]) > 0:
+        self._static_cells = None
+        self._static_voronoi = None
+        if (self.cell_positions_history is not None
+                and len(self.cell_positions_history) > 0):
             try:
-                n_var = self.sim_history[0].shape[1]
-                for i in range(n_var):
-                    all_vals = []
-                    for frame in self.sim_history:
-                        if len(frame) > 0 and len(frame[0]) > i:
-                            all_vals.append(frame[:, i])
-                    if all_vals:
-                        concat_vals = np.concatenate(all_vals)
-                        self.global_bounds.append((concat_vals.min(), concat_vals.max()))
+                first_cells = np.asarray(self.cell_positions_history[0])
+                if all(
+                    np.array_equal(first_cells, np.asarray(frame_cells))
+                    for frame_cells in self.cell_positions_history[1:]
+                ):
+                    self._static_cells = first_cells
+                    if np.array_equal(first_cells, np.asarray(self.vor_grid.cells)):
+                        self._static_voronoi = self.vor_grid.vor
                     else:
-                        self.global_bounds.append((0, 1))
-            except Exception:
+                        self._static_voronoi = Voronoi(first_cells)
+            except (TypeError, ValueError):
                 pass
+        self._color_has_mode = False
+        self._color_accepts_bounds = False
+        if self.color_func:
+            try:
+                import inspect
+                signature = inspect.signature(self.color_func)
+                self._color_has_mode = 'mode' in signature.parameters
+                self._color_accepts_bounds = (
+                    'global_bounds' in signature.parameters
+                    or any(p.kind == p.VAR_KEYWORD
+                           for p in signature.parameters.values())
+                )
+            except (TypeError, ValueError):
+                pass
+        
+        self.frame_bounds = [
+            self._calculate_bounds(frame) for frame in self.sim_history
+        ]
+        # Retain the attribute for callers that inspect it, while rendering now
+        # uses frame_bounds so the scale follows the currently displayed step.
+        self.global_bounds = self._calculate_bounds_across_history()
+
+    @staticmethod
+    def _calculate_bounds(frame):
+        values = np.asarray(frame)
+        if values.ndim != 2:
+            return []
+        bounds = []
+        for variable_index in range(values.shape[1]):
+            column = np.asarray(values[:, variable_index], dtype=float)
+            finite_values = column[np.isfinite(column)]
+            if finite_values.size:
+                bounds.append((float(finite_values.min()), float(finite_values.max())))
+            else:
+                bounds.append((0.0, 1.0))
+        return bounds
+
+    def _calculate_bounds_across_history(self):
+        if not self.frame_bounds:
+            return []
+        variable_count = max((len(bounds) for bounds in self.frame_bounds), default=0)
+        global_bounds = []
+        for variable_index in range(variable_count):
+            available = [
+                bounds[variable_index]
+                for bounds in self.frame_bounds
+                if variable_index < len(bounds)
+            ]
+            if available:
+                global_bounds.append((
+                    min(lower for lower, _ in available),
+                    max(upper for _, upper in available),
+                ))
+            else:
+                global_bounds.append((0.0, 1.0))
+        return global_bounds
 
     def _draw_frame(self, ax, frame, save_path=None, line_colors='black', line_width=2, line_alpha=0.7, point_size=10):
         sim_history = self.sim_history
         color_func = self.color_func
         cell_positions_history = self.cell_positions_history
-        if cell_positions_history is not None:
+        if self._static_voronoi is not None:
+            cells = self._static_cells
+            vor = self._static_voronoi
+        elif cell_positions_history is not None:
             cells = cell_positions_history[frame]
             vor = Voronoi(cells)
         else:
@@ -64,13 +128,11 @@ class VoronoiAnimator:
         off_center2_colors = None
         membrane_colors = None
         if color_func:
-            import inspect
-            sig = inspect.signature(color_func)
             kwargs = {}
-            if 'global_bounds' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-                kwargs['global_bounds'] = self.global_bounds
+            if self._color_accepts_bounds:
+                kwargs['global_bounds'] = self.frame_bounds[frame]
                 
-            if 'mode' in sig.parameters:
+            if self._color_has_mode:
                 try:
                     poly_colors = color_func(sim_history[frame], mode='polygon', **kwargs)
                 except Exception as e:
@@ -143,52 +205,114 @@ class VoronoiAnimator:
         if not self.show_ticks:
             ax.set_xticks([])
             ax.set_yticks([])
-        # 動態範圍
-        outer_set = set()
-        for i, region_index in enumerate(vor.point_region):
-            region = vor.regions[region_index]
-            if not region or any(v < 0 for v in region):
-                outer_set.add(i)
-        neighbor_set = set()
-        for p1, p2 in vor.ridge_points:
-            if p1 in outer_set:
-                neighbor_set.add(p2)
-            if p2 in outer_set:
-                neighbor_set.add(p1)
-        all_indices = set(range(len(vor.points)))
-        inner_indices = list(all_indices - outer_set - neighbor_set)
-        if self.dynamic_range:
-            ax.set_xlim(cells[inner_indices,0].min(), cells[inner_indices,0].max())
-            ax.set_ylim(cells[inner_indices,1].min(), cells[inner_indices,1].max())
-        else:
-            if not self.xlim and not self.ylim:
-                self.xlim=[cells[inner_indices,0].min(), cells[inner_indices,0].max()]
-                self.ylim=[cells[inner_indices,1].min(), cells[inner_indices,1].max()]
+        # Keep a fixed export viewport after the first frame. Recomputing outer
+        # cell sets and ridge neighbours for every frame added avoidable work.
+        if not self.dynamic_range and self.xlim and self.ylim:
             ax.set_xlim(self.xlim[0], self.xlim[1])
             ax.set_ylim(self.ylim[0], self.ylim[1])
+        else:
+            outer_set = set()
+            for i, region_index in enumerate(vor.point_region):
+                region = vor.regions[region_index]
+                if not region or any(v < 0 for v in region):
+                    outer_set.add(i)
+            neighbor_set = set()
+            for p1, p2 in vor.ridge_points:
+                if p1 in outer_set:
+                    neighbor_set.add(p2)
+                if p2 in outer_set:
+                    neighbor_set.add(p1)
+            all_indices = set(range(len(vor.points)))
+            inner_indices = list(all_indices - outer_set - neighbor_set)
+            if not inner_indices:
+                inner_indices = list(range(len(cells)))
+            xlim = [cells[inner_indices, 0].min(), cells[inner_indices, 0].max()]
+            ylim = [cells[inner_indices, 1].min(), cells[inner_indices, 1].max()]
+            if self.dynamic_range:
+                ax.set_xlim(xlim[0], xlim[1])
+                ax.set_ylim(ylim[0], ylim[1])
+            else:
+                self.xlim = xlim
+                self.ylim = ylim
+                ax.set_xlim(self.xlim[0], self.xlim[1])
+                ax.set_ylim(self.ylim[0], self.ylim[1])
         # 每50幀儲存一張png
-        if save_path and frame % 50 == 0:
-            base, ext = os.path.splitext(save_path)
-            png_path = f"{base}_frame{frame}.png"
-            plt.savefig(png_path, dpi=480)
+        # Video export deliberately does not emit high-resolution key-frame
+        # PNGs. The old behaviour rendered a second 480-DPI image every 50
+        # frames and was a major source of latency and disk usage.
 
     def animate(self, save_path=None, interval=200, line_colors='black', line_width=2, line_alpha=0.7, point_size=10):
+        if save_path:
+            fps = max(1, round(1000 / max(interval, 1)))
+            return self.export_video(
+                save_path,
+                fps=min(fps, 30),
+                dpi=120,
+                line_colors=line_colors,
+                line_width=line_width,
+                line_alpha=line_alpha,
+                point_size=point_size,
+            )
         fig, ax = plt.subplots()
         def animate_func(frame):
             ax.clear()
             self._draw_frame(ax, frame, save_path, line_colors, line_width, line_alpha, point_size)
         from matplotlib.animation import FuncAnimation
         ani = FuncAnimation(fig, animate_func, frames=len(self.sim_history), interval=interval)
-        if save_path:
-            ani.save(save_path, dpi=480)
-        else:
-            plt.show()
+        plt.show()
+
+    def export_video(self, save_path, fps=20, dpi=120,
+                     progress_callback=None, check_cancel=None,
+                     **draw_options):
+        """Render an MP4 at screen resolution with progress and cancellation."""
+        from matplotlib.animation import FFMpegWriter
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+
+        figure = Figure(figsize=(8, 6), dpi=dpi, tight_layout=True)
+        FigureCanvasAgg(figure)
+        axis = figure.add_subplot(111)
+        writer = FFMpegWriter(
+            fps=fps,
+            bitrate=2400,
+            metadata={"title": "Voronoi simulation"},
+        )
+        total = len(self.sim_history)
+        try:
+            with writer.saving(figure, save_path, dpi=dpi):
+                for frame in range(total):
+                    if check_cancel and check_cancel():
+                        raise ExportCancelled()
+                    axis.clear()
+                    self._draw_frame(axis, frame, None, **draw_options)
+                    writer.grab_frame()
+                    if progress_callback and (
+                        frame == total - 1
+                        or frame % max(1, total // 100) == 0
+                    ):
+                        progress_callback(frame + 1, total)
+        finally:
+            figure.clear()
 
     def animateGUI(self, fig, interval=200, line_colors='black', line_width=2, line_alpha=0.7, point_size=10):
         ax = fig.gca()
+        colorbar_entries = []
+
+        def update_colorbars(frame):
+            bounds = self.frame_bounds[frame]
+            for variable_index, scalar_mappable, colorbar in colorbar_entries:
+                if variable_index >= len(bounds):
+                    continue
+                vmin, vmax = bounds[variable_index]
+                if vmin == vmax:
+                    vmax = vmin + 1e-8
+                scalar_mappable.set_norm(plt.Normalize(vmin=vmin, vmax=vmax))
+                colorbar.update_normal(scalar_mappable)
+
         def animate_func(frame):
             ax.clear()
             self._draw_frame(ax, frame, None, line_colors, line_width, line_alpha, point_size)
+            update_colorbars(frame)
         from matplotlib.animation import FuncAnimation
         anim = FuncAnimation(fig, animate_func, frames=len(self.sim_history), interval=interval, blit=False, repeat=False)
         
@@ -209,8 +333,6 @@ class VoronoiAnimator:
                 if c not in unique_cmaps:
                     unique_cmaps.append(c)
             
-            history_arr = np.array([np.array(frame) for frame in self.sim_history], dtype=object)
-            
             # Use matplotlib's make_axes_locatable for neat colorbar stacking
             from mpl_toolkits.axes_grid1 import make_axes_locatable
             divider = make_axes_locatable(ax)
@@ -219,9 +341,10 @@ class VoronoiAnimator:
                 if i >= n_var or i >= len(labels):
                     break
                 
-                # find global min max for this variable
-                if i < len(self.global_bounds):
-                    vmin, vmax = self.global_bounds[i]
+                # Initialize from the first step; animate_func updates this
+                # mappable whenever the displayed frame changes.
+                if self.frame_bounds and i < len(self.frame_bounds[0]):
+                    vmin, vmax = self.frame_bounds[0][i]
                 else:
                     vmin, vmax = 0, 1
                 
@@ -233,6 +356,7 @@ class VoronoiAnimator:
                 cax = divider.append_axes("right", size="5%", pad=0.8)
                 cbar = fig.colorbar(sm, cax=cax)
                 cbar.set_label(labels[i])
+                colorbar_entries.append((i, sm, cbar))
                 
         return anim
 

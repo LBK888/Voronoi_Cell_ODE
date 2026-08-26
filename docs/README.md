@@ -97,11 +97,8 @@ This function determines how the numerical concentrations (`Y`) are mapped to vi
 Matplotlib offers a wide variety of colormaps. You can browse them here:
 👉 **[Matplotlib Colormaps Documentation](https://matplotlib.org/stable/users/explain/colors/colormaps.html)**
 
-### Normalization Approaches
-Because concentration values can range drastically, they must be normalized to a `[0, 1]` scale before being mapped to a colormap. You can choose to normalize either **Per-Frame** or **Globally**.
-
-#### Approach A: Global Normalization (Recommended for accurate colorbars)
-If you want the colors in your animation to match the static colorbars exactly, you should use the `global_bounds` parameter. The system pre-calculates the absolute minimum and maximum values across the entire simulation and passes them to your function.
+### Per-Frame Normalization
+Because concentration values can range drastically, they must be normalized to a `[0, 1]` scale before being mapped to a colormap. The preview and results colorbars now follow the minimum and maximum of the currently displayed step. Use the `global_bounds` parameter (the legacy name is retained for configuration compatibility) to receive those current-step bounds directly.
 
 ```python
 import numpy as np
@@ -109,20 +106,19 @@ import matplotlib.pyplot as plt
 
 def color_func(Y, mode='polygon', global_bounds=None):
     if mode == 'polygon':
-        vmin, vmax = global_bounds[0] # Bounds for Variable 0
+        vmin, vmax = global_bounds[0] # Current-step bounds for Variable 0
         norm = (Y[:,0] - vmin) / (vmax - vmin + 1e-8)
         return plt.cm.plasma(norm)
             
     elif mode == 'center':
-        vmin, vmax = global_bounds[1] # Bounds for Variable 1
+        vmin, vmax = global_bounds[1] # Current-step bounds for Variable 1
         norm = (Y[:,1] - vmin) / (vmax - vmin + 1e-8)
         return plt.cm.viridis(norm)
             
     return None
 ```
 
-#### Approach B: Per-Frame Normalization (Dynamic Contrast)
-If you want the visual contrast to be maximized in every single frame (ignoring the global scale), you can normalize using the `min()` and `max()` of the current frame array `Y`.
+You can equivalently calculate the current-step bounds directly from `Y`:
 
 ```python
 import numpy as np

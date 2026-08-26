@@ -463,7 +463,7 @@ class ConstantNode(DataNode):
 
     def serialize(self):
         data = super().serialize()
-        data["value"] = float(self.value_edit.text() or 0.0)
+        data["value"] = self.value_edit.text() or "0.0"
         return data
         
     def deserialize(self, data):
@@ -474,13 +474,15 @@ class ParameterNode(DataNode):
     def __init__(self):
         super().__init__("Parameter")
         self.title_color = NODE_COLORS[1]
-        self.width = 150
+        self.width = 180
         self.add_output("Value", "Float")
         
         form = QFormLayout()
         form.setContentsMargins(0,0,0,0)
         self.param_name_edit = QLineEdit("betaD")
+        self.default_value_edit = QLineEdit("0.0")
         form.addRow("Name:", self.param_name_edit)
+        form.addRow("Default:", self.default_value_edit)
         self.layout.addLayout(form)
         self.access_style = "get"
 
@@ -556,6 +558,34 @@ class DerivativeNode(SeqNode):
     def deserialize(self, data):
         super().deserialize(data)
         self.index_edit.setValue(data.get("state_idx", 0))
+
+class AssignmentNode(SeqNode):
+    def __init__(self):
+        super().__init__("Assign")
+        self.title_color = NODE_COLORS[4]
+        self.width = 180
+        self.add_input("Value", "Any")
+        self.add_output("Variable", "Any")
+
+        form = QFormLayout()
+        form.setContentsMargins(0,0,0,0)
+        self.var_name_edit = QLineEdit("var")
+        form.addRow("Name:", self.var_name_edit)
+        self.layout.addLayout(form)
+        self.value_mode = "scalar"
+
+        self.update_sockets()
+
+    def serialize(self):
+        data = super().serialize()
+        data["var_name"] = self.var_name_edit.text()
+        data["value_mode"] = getattr(self, "value_mode", "scalar")
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.var_name_edit.setText(data.get("var_name", "var"))
+        self.value_mode = data.get("value_mode", "scalar")
 
 class PythonCodeNode(SeqNode):
     def __init__(self):
@@ -658,20 +688,16 @@ class IfNode(SeqNode):
         form.addRow("Cond:", self.condition_edit)
         self.layout.addLayout(form)
         
-        # Replace seq_out with then_out and else_out
-        if self.seq_out:
-            if self.scene(): self.scene().removeItem(self.seq_out)
-        self.seq_out = None
-        
-        self.then_out = NodeSocket(self, "seq_out", "Then", "Sequence")
-        self.else_out = NodeSocket(self, "seq_out", "Else", "Sequence")
+        self.seq_out.name = "Then / Next"
+        self.then_out = self.seq_out
+        self.else_out = None
         
         self.add_input("Condition (Opt)", "Any")
         self.update_sockets()
         
     def update_sockets(self):
         super().update_sockets()
-        if hasattr(self, 'then_out') and self.then_out:
+        if hasattr(self, 'then_out') and self.then_out and self.then_out != self.seq_out:
             self.then_out.setPos(self.width / 2 - 20, self.height)
             for e in self.then_out.edges: e.update_path()
         if hasattr(self, 'else_out') and self.else_out:
@@ -729,6 +755,34 @@ class EndWhileNode(SeqNode):
         self.width = 160
         self.height = 60
         self.update_sockets()
+
+class ForLoopNode(SeqNode):
+    def __init__(self):
+        super().__init__("For loop")
+        self.title_color = QColor(150, 50, 200)
+        self.width = 220
+        self.height = 100
+
+        form = QFormLayout()
+        form.setContentsMargins(0,0,0,0)
+        self.target_edit = QLineEdit("j")
+        self.iter_edit = QLineEdit("range(10)")
+        form.addRow("Target:", self.target_edit)
+        form.addRow("Iter:", self.iter_edit)
+        self.layout.addLayout(form)
+
+        self.update_sockets()
+
+    def serialize(self):
+        data = super().serialize()
+        data["target"] = self.target_edit.text()
+        data["iter"] = self.iter_edit.text()
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.target_edit.setText(data.get("target", "j"))
+        self.iter_edit.setText(data.get("iter", "range(10)"))
 
 class OdeEndNode(SeqNode):
     def __init__(self):
@@ -819,9 +873,6 @@ class ContinueNode(SeqNode):
         self.title_color = QColor(150, 50, 200)
         self.width = 140
         self.height = 60
-        if self.seq_out:
-            if self.scene(): self.scene().removeItem(self.seq_out)
-            self.seq_out = None
         self.update_sockets()
 
 class BreakNode(SeqNode):
@@ -830,9 +881,6 @@ class BreakNode(SeqNode):
         self.title_color = QColor(150, 50, 200)
         self.width = 140
         self.height = 60
-        if self.seq_out:
-            if self.scene(): self.scene().removeItem(self.seq_out)
-            self.seq_out = None
         self.update_sockets()
 
 class ColorMappingNode(DataNode):
