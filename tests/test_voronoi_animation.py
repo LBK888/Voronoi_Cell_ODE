@@ -1,4 +1,6 @@
 import unittest
+from contextlib import contextmanager
+from unittest.mock import patch
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -77,6 +79,53 @@ class VoronoiAnimatorColorRangeTests(unittest.TestCase):
             (colorbar.norm.vmin, colorbar.norm.vmax),
             (100.0, 300.0),
         )
+
+    def test_exported_video_has_labeled_colorbar_in_every_frame(self):
+        captured = []
+
+        class RecordingWriter:
+            def __init__(self, **kwargs):
+                pass
+
+            @contextmanager
+            def saving(self, figure, path, dpi):
+                self.figure = figure
+                yield
+
+            def grab_frame(self):
+                self.figure.canvas.draw()
+                captured.append([
+                    (axis.get_ylabel(), axis._colorbar.norm.vmin,
+                     axis._colorbar.norm.vmax)
+                    for axis in self.figure.axes if hasattr(axis, '_colorbar')
+                ])
+
+        with patch('matplotlib.animation.FFMpegWriter', RecordingWriter):
+            self.animator.export_video('unused.mp4')
+
+        self.assertEqual(captured, [
+            [('signal', 1.0, 3.0)],
+            [('signal', 100.0, 300.0)],
+        ])
+
+    def test_explicit_legends_support_reordered_columns_and_reused_colormaps(self):
+        animator = VoronoiAnimator(
+            self.animator.vor_grid,
+            [np.column_stack((frame[:, 0], frame[:, 0] * 10)) for frame in self.history],
+            color_func=lambda values: plt.cm.Reds(values[:, 0] / values[:, 0].max()),
+            params={'labels': ['A', 'B'], 'colorbars': [
+                dict(variable=1, cmap='Reds'), dict(variable=0, cmap='Reds'),
+            ]},
+        )
+        figure = Figure()
+        FigureCanvasAgg(figure)
+        figure.add_subplot(111)
+        animation = animator.animateGUI(figure)
+        animation._draw_was_started = True
+        animation._func(1)
+        self.assertEqual([axis.get_ylabel() for axis in figure.axes[1:]], ['B', 'A'])
+        self.assertEqual([(axis._colorbar.norm.vmin, axis._colorbar.norm.vmax)
+                          for axis in figure.axes[1:]], [(1000., 3000.), (100., 300.)])
 
 
 if __name__ == '__main__':

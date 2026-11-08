@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper to Voronoi ODE"
+  short_description: "Translate paper equations into runnable Voronoi models"
+  default_prompt: "Use $paper-to-voronoi-ode to implement the supplied paper equations as a validated Voronoi_Cell_ODE model template."

@@ -35,8 +35,11 @@ This tool allows you to design, preview, and simulate various cell arrangements 
 - **Interactive preview**: Drag, add, or delete cells with your mouse; Voronoi diagram updates in real time.
 - **Multiple cell movement modes**: Combine random movement, move away from center, convergent extension, and neighbor repulsion.
 - **ODE and parameter editing**: Directly edit the ODE and simulation parameters in the GUI.
+- **Accidental-edit protection**: The mouse wheel scrolls settings without changing numeric inputs, sliders or closed dropdown selections, including focused fields. Use typing, keyboard arrows or the controls' buttons to change values.
 - **Simulation and animation**: Run full simulations and preview or export animations and concentration plots.
 - **Per-step color scaling**: Preview and result colorbars automatically use the minimum and maximum values of the currently displayed step.
+- **Complete figure export**: MP4 includes the same labeled colorbars as the GUI. Save Frame defaults to editable PDF, with SVG/PNG available; right-click result plots to copy the current image.
+- **Experiments tab**: Sweep two parameters or species initial concentrations, measure spatial/tail statistics, and export a response heatmap plus replicate data and model settings.
 - **Traceable raw data**: Every simulated cell has a persistent `cell_id`, including across cell division and apoptosis.
 - **Batch download**: Export the configuration, video, plots, Excel raw data, and HDF5 data to a chosen folder.
 - **Status bar and progress bar**: Always know the current state and progress.
@@ -45,6 +48,10 @@ This tool allows you to design, preview, and simulate various cell arrangements 
 ---
 
 ## Installation
+
+**Windows executable:** Download `VoronoiCellODE.exe` from [GitHub Releases](https://github.com/LBK888/Voronoi_Cell_ODE/releases). Python and FFmpeg are included. See the [Windows release guide](docs/windows-release.md) for persistent settings and build instructions.
+
+For this workspace, maintain code/docs in the pCloud checkout and execute/test in `F:\Voronoi_Cell_ODE` using its existing `.venv`. No virtual environment is needed in the synced source folder.
 
 1. **Clone this repository**  
    ```bash
@@ -147,6 +154,14 @@ The `cells.xlsx` workbook contains one row per cell per simulation step:
 - `Y[0]`, `Y[1]`, ...: ODE state-variable values.
 
 ### 9. **Colorbar Range**
+
+- Exported MP4 frames include labeled colorbars and update their ranges with each frame, using the same rendering code as the GUI. For complex color functions, declare explicit `params['colorbars']`; see the [scripting guide](docs/README.md).
+
+**Still figures:** Save Frame defaults to PDF with editable fonts and vector geometry. SVG and PNG are also available. Right-click a simulation result, cell trace, or experiment heatmap and choose **Copy current image** to copy a PNG (including colorbars) to the clipboard. The grid editor retains its existing right-click delete action.
+
+**Experiments:** The tab immediately after Run supports two independent parameter/initial-concentration axes, linear/log spacing, replicate seeds, spatial or tail-window response statistics, background execution/cancellation, PDF heatmaps and CSV + settings JSON export. See the [experiment guide](docs/experiments.md) for definitions and numerical limitations.
+
+**Paper models:** Agents can use the project-local [paper-to-voronoi-ode skill](skills/paper-to-voronoi-ode/SKILL.md), its worked model, and numerical validator. Root `AGENTS.md` points agents to the skill.
 
 - In the Preview and Results area, each colorbar follows the minimum and maximum of the currently displayed step.
 - Custom color functions that accept `global_bounds` remain compatible. For backward compatibility the parameter name is unchanged, but the supplied bounds now belong to the current step rather than the whole simulation.

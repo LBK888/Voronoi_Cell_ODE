@@ -254,9 +254,11 @@ class VoronoiAnimator:
                 point_size=point_size,
             )
         fig, ax = plt.subplots()
+        colorbars = self._create_colorbars(fig, ax)
         def animate_func(frame):
             ax.clear()
             self._draw_frame(ax, frame, save_path, line_colors, line_width, line_alpha, point_size)
+            self._update_colorbars(colorbars, frame)
         from matplotlib.animation import FuncAnimation
         ani = FuncAnimation(fig, animate_func, frames=len(self.sim_history), interval=interval)
         plt.show()
@@ -272,6 +274,7 @@ class VoronoiAnimator:
         figure = Figure(figsize=(8, 6), dpi=dpi, tight_layout=True)
         FigureCanvasAgg(figure)
         axis = figure.add_subplot(111)
+        colorbars = self._create_colorbars(figure, axis)
         writer = FFMpegWriter(
             fps=fps,
             bitrate=2400,
@@ -285,6 +288,7 @@ class VoronoiAnimator:
                         raise ExportCancelled()
                     axis.clear()
                     self._draw_frame(axis, frame, None, **draw_options)
+                    self._update_colorbars(colorbars, frame)
                     writer.grab_frame()
                     if progress_callback and (
                         frame == total - 1
@@ -296,69 +300,61 @@ class VoronoiAnimator:
 
     def animateGUI(self, fig, interval=200, line_colors='black', line_width=2, line_alpha=0.7, point_size=10):
         ax = fig.gca()
-        colorbar_entries = []
-
-        def update_colorbars(frame):
-            bounds = self.frame_bounds[frame]
-            for variable_index, scalar_mappable, colorbar in colorbar_entries:
-                if variable_index >= len(bounds):
-                    continue
-                vmin, vmax = bounds[variable_index]
-                if vmin == vmax:
-                    vmax = vmin + 1e-8
-                scalar_mappable.set_norm(plt.Normalize(vmin=vmin, vmax=vmax))
-                colorbar.update_normal(scalar_mappable)
+        colorbar_entries = self._create_colorbars(fig, ax)
 
         def animate_func(frame):
             ax.clear()
             self._draw_frame(ax, frame, None, line_colors, line_width, line_alpha, point_size)
-            update_colorbars(frame)
+            self._update_colorbars(colorbar_entries, frame)
         from matplotlib.animation import FuncAnimation
         anim = FuncAnimation(fig, animate_func, frames=len(self.sim_history), interval=interval, blit=False, repeat=False)
         
-        # Add colorbars
-        if self.params and 'labels' in self.params and self.color_func:
-            labels = self.params['labels']
-            n_var = self.params.get('n_var', len(labels))
-            import inspect
-            import re
-            try:
-                source = self.color_func_str if self.color_func_str else inspect.getsource(self.color_func)
-                cmaps = re.findall(r'plt\.cm\.([a-zA-Z0-9_]+)', source)
-            except Exception:
-                cmaps = []
-            
-            unique_cmaps = []
-            for c in cmaps:
-                if c not in unique_cmaps:
-                    unique_cmaps.append(c)
-            
-            # Use matplotlib's make_axes_locatable for neat colorbar stacking
-            from mpl_toolkits.axes_grid1 import make_axes_locatable
-            divider = make_axes_locatable(ax)
-            
-            for i, cmap_name in enumerate(unique_cmaps):
-                if i >= n_var or i >= len(labels):
-                    break
-                
-                # Initialize from the first step; animate_func updates this
-                # mappable whenever the displayed frame changes.
-                if self.frame_bounds and i < len(self.frame_bounds[0]):
-                    vmin, vmax = self.frame_bounds[0][i]
-                else:
-                    vmin, vmax = 0, 1
-                
-                if vmin == vmax:
-                    vmax = vmin + 1e-8
-                    
-                sm = plt.cm.ScalarMappable(cmap=cmap_name, norm=plt.Normalize(vmin=vmin, vmax=vmax))
-                sm.set_array([])
-                cax = divider.append_axes("right", size="5%", pad=0.8)
-                cbar = fig.colorbar(sm, cax=cax)
-                cbar.set_label(labels[i])
-                colorbar_entries.append((i, sm, cbar))
-                
         return anim
+
+    def _create_colorbars(self, figure, axis):
+        """Build the same legends for GUI, standalone animation and MP4."""
+        import inspect
+        import re
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+        if not self.color_func or not self.frame_bounds:
+            return []
+        params = self.params or {}
+        labels = params.get('labels', [])
+        specs = params.get('colorbars')
+        if specs is None:
+            try:
+                source = self.color_func_str or inspect.getsource(self.color_func)
+            except (OSError, TypeError):
+                source = ''
+            cmaps = list(dict.fromkeys(re.findall(r'plt\.cm\.([a-zA-Z0-9_]+)', source)))
+            specs = [dict(variable=i, cmap=cmap) for i, cmap in enumerate(cmaps)
+                     if i < len(self.frame_bounds[0])]
+        entries = []
+        divider = make_axes_locatable(axis)
+        for spec in specs:
+            index = int(spec['variable'])
+            if index < 0 or index >= len(self.frame_bounds[0]):
+                raise ValueError('colorbars variable is outside the state vector')
+            label = spec.get('label', labels[index] if index < len(labels) else f'Y[{index}]')
+            mappable = plt.cm.ScalarMappable(cmap=spec['cmap'])
+            mappable.set_array([])
+            cax = divider.append_axes('right', size='5%', pad=0.8)
+            colorbar = figure.colorbar(mappable, cax=cax)
+            colorbar.set_label(label)
+            entries.append((index, mappable, colorbar))
+        self._update_colorbars(entries, 0)
+        return entries
+
+    def _update_colorbars(self, entries, frame):
+        for index, mappable, colorbar in entries:
+            vmin, vmax = self.frame_bounds[frame][index]
+            if vmin == vmax:
+                vmax = vmin + max(1e-8, abs(vmin) * 1e-8)
+            # Replace the norm atomically, avoiding callbacks with transient
+            # invalid limits when consecutive frames differ by orders of magnitude.
+            mappable.set_norm(plt.Normalize(vmin=vmin, vmax=vmax))
+            colorbar.update_normal(mappable)
 
     @staticmethod
     def plot_heatmap(results, title, save_path=None):

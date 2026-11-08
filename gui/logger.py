@@ -1,6 +1,9 @@
 import logging
+from gui.app_paths import data_path
 
-def setup_logger(log_file='app.log'):
+def setup_logger(log_file=None):
+    if log_file is None:
+        log_file = str(data_path('app.log'))
     logger = logging.getLogger('VoronoiApp')
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -17,4 +20,4 @@ def setup_logger(log_file='app.log'):
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    return logger 
+    return logger

@@ -1,0 +1,25 @@
+{
+  "grid_shape_x": 8,
+  "grid_shape_y": 8,
+  "cell_dist": "1.0",
+  "pos_rand": "0.0",
+  "grid_mode": 0,
+  "T": "4.0",
+  "move_random": false,
+  "move_away": false,
+  "move_ce": false,
+  "move_repulsion": false,
+  "move_vertex_model": false,
+  "move_division": false,
+  "move_apoptosis": false,
+  "ode": "def ode(Y, t, params, cell_positions):\n    A, B = Y[:, 0], Y[:, 1]\n    p = params\n    dY = np.zeros_like(Y, dtype=float)\n    dY[:, 0] = p['alpha'] / (1 + (B / p['K'])**p['h']) - p['gamma_A'] * A\n    dY[:, 1] = p['k'] * A - p['gamma_B'] * B\n    return dY\n",
+  "params": "params = dict(dT=0.02, alpha=2.0, K=1.0, h=2.0, gamma_A=1.0, k=1.0, gamma_B=0.5, n_var=2, labels=['A', 'B'], init_Y=[0.1, 0.2], colorbars=[dict(variable=0, cmap='Reds', label='A'), dict(variable=1, cmap='Blues', label='B')])",
+  "color_func": "def color_func(Y, mode='polygon', global_bounds=None):\n    if mode == 'polygon':\n        index, cmap = 0, plt.cm.Reds\n    elif mode == 'center':\n        index, cmap = 1, plt.cm.Blues\n    else:\n        return None\n    low, high = global_bounds[index] if global_bounds else (Y[:, index].min(), Y[:, index].max())\n    return cmap((Y[:, index] - low) / max(high - low, 1e-8))\n",
+  "model_notes": {
+    "source": "Constructed teaching example; not attributed to a research paper",
+    "equations": ["dA/dt = alpha/(1+(B/K)^h) - gamma_A*A", "dB/dt = k*A - gamma_B*B"],
+    "state_columns": {"A": 0, "B": 1},
+    "units": "Demonstration uses dimensionless concentration and time",
+    "assumptions": ["All values are illustrative", "Independent cells; no diffusion or mechanics", "Uniform initial condition"]
+  }
+}

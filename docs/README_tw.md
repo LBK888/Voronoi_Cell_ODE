@@ -4,6 +4,17 @@
 
 本指南提供 Voronoi 細胞 ODE 模擬器介面中三個核心腳本元件的詳細說明：`ode()`、`params` 與 `color_func()`。這些元件定義了您細胞模型的數學運算規則、模擬參數以及視覺化呈現方式。
 
+從論文公式建立模型時，可使用 [paper-to-voronoi-ode skill](../skills/paper-to-voronoi-ode/SKILL.md) 的介面說明、設定範例與驗證工具；二維數值掃描請參考 [Experiments](experiments.md)。
+
+GUI 與 MP4 共用色條。舊版色彩函式依原始碼中不同 `plt.cm.NAME` 的出現順序推測色條；若重複使用相同色盤或物質順序不同，建議在 Params 加入明確對應：
+
+```python
+colorbars=[dict(variable=0, cmap='Reds', label='A'),
+           dict(variable=1, cmap='Blues', label='B')]
+```
+
+每筆對應一個狀態欄位，色盤與每影格正規化需和 `color_func` 一致。指定清單會取代自動推測，`colorbars=[]` 可刻意隱藏色條。混合訊號不能誤標成單一物質。Save Frame 預設為可編輯 PDF；結果圖按右鍵可複製或另存。
+
 ---
 
 ## 1. `ode()` 函數

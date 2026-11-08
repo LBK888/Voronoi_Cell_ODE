@@ -5,3 +5,8 @@ app.log
 gen.py
 out.txt
 diff_output.txt
+build/
+dist/
+release_work/
+test_artifacts/
+.codegraph/

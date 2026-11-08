@@ -36,6 +36,7 @@
 - **互動式預覽**：可用滑鼠拖曳、加入或刪除細胞；Voronoi 圖會即時更新。
 - **多種細胞移動模式**：支援隨機移動、遠離中心、趨向延伸與鄰域排斥等組合。
 - **ODE 與參數編輯**：可直接在 GUI 中修改 ODE 與模擬參數。
+- **避免滾輪誤改參數**：滑鼠滾輪僅用於捲動設定頁面，不會改變數值欄位、滑桿或未展開的下拉選單，即使欄位已取得焦點也一樣。請用鍵盤輸入、方向鍵或元件按鈕調整數值。
 - **模擬與動畫**：執行完整模擬並預覽或匯出動畫與濃度曲線圖。
 - **逐 step 色階**：Preview 與 Results 的 Colorbar 會自動使用目前 step 的最小值與最大值。
 - **可追蹤的原始資料**：每個模擬細胞都有持續不變的 `cell_id`，並支援分裂與凋亡後的追蹤。
@@ -46,6 +47,8 @@
 ---
 
 ## 安裝方式
+
+**Windows 直接執行版：** 從 [GitHub Releases](https://github.com/LBK888/Voronoi_Cell_ODE/releases) 下載 `VoronoiCellODE.exe`，不需安裝 Python 或 FFmpeg。設定保存在使用者資料夾，詳細說明與自行打包方式見 [Windows 發行指南](docs/windows-release.md)。
 
 1. **複製此倉庫**
 
@@ -163,6 +166,7 @@
 
 ### 9. **Colorbar 範圍**
 
+- 匯出的 MP4 現在與 GUI 共用色條邏輯，每個影格都包含標籤與當下的濃度範圍。複雜的色彩對應可用 `params['colorbars']` 明確設定，見[腳本指南](docs/README_tw.md)。
 - Preview 與 Results 區域中的每個 Colorbar，都會依目前顯示 step 的最小值與最大值更新。
 - 接受 `global_bounds` 參數的自訂色彩函式仍可相容。為了相容既有設定檔，參數名稱維持不變，但現在傳入的是目前 step 的範圍，而非整段模擬的共同範圍。
 
@@ -170,6 +174,24 @@
 
 - 狀態列（最下方）顯示當前操作、錯誤訊息與日誌。
 - 進度條顯示模擬與匯出進度。
+
+### 11. **單張圖與剪貼簿**
+
+- **Save Frame** 預設儲存 PDF 向量圖，可選 SVG 或 PNG。PDF 使用可編輯字型；細胞、多邊形與色條保留向量形式。
+- 在模擬結果圖按**滑鼠右鍵 → Copy current image**，即可把目前影格連同色條複製到剪貼簿，直接貼入簡報或文件。剪貼簿使用 PNG 圖像；需編輯圖形時請另存 PDF／SVG。
+- 細胞濃度曲線與實驗熱圖也支援右鍵複製／另存。初始格點預覽區的右鍵仍是刪除細胞。
+
+### 12. **Experiments 數值分析**
+
+- 在 **Run 後方的 Experiments 分頁**，設定 X／Y 軸為模型參數或某物質的初始濃度，並指定上下限、取樣數與線性／對數間距。
+- 選擇觀察物質，以及終點空間平均、標準差、CV，或末段時間窗的平均／振幅。可設定每像素重複次數和亂數種子，背景執行並可取消。
+- **Save Heatmap...** 預設匯出 PDF；**Export Data...** 儲存每次試驗的 CSV 與完整設定 JSON。
+- 操作、統計定義、灰色失敗像素與重現方式請見 [Experiments 使用說明](docs/experiments.md)。
+
+### 13. **從論文公式建立模型的 AI skill**
+
+- 專案內附 [paper-to-voronoi-ode](skills/paper-to-voronoi-ode/SKILL.md)，提供公式／變數對照、ODE／參數／色彩／mechanics 介面、JSON 設定範例及驗證工具。其他 agent 可依根目錄 `AGENTS.md` 找到它。
+- 此工作區的原始碼與文件維護在 pCloud 專案；執行與測試使用 `F:\Voronoi_Cell_ODE\.venv\Scripts\python.exe`，不必在 pCloud 資料夾安裝 venv。
 
 ---
 

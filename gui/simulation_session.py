@@ -29,6 +29,8 @@ class SimulationRequest:
     ode_source: str
     movement: MovementPlan = field(default_factory=MovementPlan)
     lifecycle: CellLifecyclePlan = field(default_factory=CellLifecyclePlan)
+    parameter_overrides: dict = field(default_factory=dict)
+    initial_overrides: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -53,8 +55,22 @@ class SimulationSession:
 
         self.request = request
         self.params = self._parse_params(request.params_source)
+        self.params.update(request.parameter_overrides)
+        # Validate overridden integration settings by the same path as editor input.
+        try:
+            d_t = float(self.params['dT'])
+        except (KeyError, TypeError, ValueError) as error:
+            raise SimulationConfigurationError('dT must be a positive finite number') from error
+        if not np.isfinite(d_t) or d_t <= 0:
+            raise SimulationConfigurationError('dT must be a positive finite number')
         self.ode_func, self.mechanics_func = self._compile_model(request.ode_source)
         self.init_y = self._build_initial_state(len(request.grid.cells))
+        for index, value in request.initial_overrides.items():
+            if not isinstance(index, int) or not 0 <= index < self.init_y.shape[1]:
+                raise SimulationConfigurationError('Initial concentration index is outside the state vector')
+            if not np.isfinite(value):
+                raise SimulationConfigurationError('Initial concentrations must be finite')
+            self.init_y[:, index] = value
         self.model = BiophysicsModel(
             cell_count=len(request.grid.cells),
             params=self.params,
@@ -123,16 +139,17 @@ class SimulationSession:
             'get_voronoi_neighbors_wo_outer': get_voronoi_neighbors_wo_outer,
             'diffusion_weighted_mean': diffusion_weighted_mean,
         }
-        locals_dict = {}
         try:
-            exec(source, globals_dict, locals_dict)
+            # One namespace lets ode/mechanics resolve helpers and constants
+            # defined in the same editor, as in a normal Python module.
+            exec(source, globals_dict)
         except Exception as error:
             raise SimulationConfigurationError(
                 f'Unable to compile ODE: {error}'
             ) from error
 
-        ode_func = locals_dict.get('ode')
-        mechanics_func = locals_dict.get('mechanics')
+        ode_func = globals_dict.get('ode')
+        mechanics_func = globals_dict.get('mechanics')
         if not callable(ode_func):
             raise SimulationConfigurationError(
                 'ODE source must define a callable ode function'

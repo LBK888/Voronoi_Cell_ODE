@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QGroupBox, QFormLayout, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QFileDialog, QProgressBar, QStatusBar, QSpinBox, QSlider,
     QDoubleSpinBox, QScrollArea, QMenuBar, QMenu, QTabWidget, QSplitter,
-    QSizePolicy, QFrame, QDialog
+    QSizePolicy, QFrame, QDialog, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QAction, QKeySequence
@@ -30,13 +30,19 @@ from gui.simulation_session import (
 )
 from gui.simulation_worker import SimulationWorker
 from gui.results_export_worker import ExportRequest, ResultsExportWorker
+from gui.figure_export import install_figure_menu, save_figure_dialog
+from gui.experiments_panel import ExperimentsPanel
+from gui.input_wheel_guard import disable_wheel_value_changes
+from gui.app_paths import data_path, resource_path, configure_ffmpeg
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')
-CONFIG_EXAMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config_example.json')
+CONFIG_PATH = str(data_path('config.json'))
+CONFIG_EXAMPLE_PATH = str(resource_path('config_example.json'))
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        disable_wheel_value_changes()
+        configure_ffmpeg()
         self.logger = setup_logger()
         self.setWindowTitle("Voronoi Notch Simulation")
         self.resize(1280, 880)
@@ -63,7 +69,7 @@ class MainWindow(QMainWindow):
         self.open_node_editor_action.triggered.connect(self.open_node_editor)
         model_menu.addAction(self.open_node_editor_action)
         
-        template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates')
+        template_dir = str(resource_path('templates'))
         if os.path.exists(template_dir) and os.path.isdir(template_dir):
             for filename in sorted(os.listdir(template_dir)):
                 if filename.endswith('.json'):
@@ -329,6 +335,13 @@ class MainWindow(QMainWindow):
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             scroll.setWidget(tab)
             self.settings_tabs.addTab(scroll, title)
+        self.experiments_panel = ExperimentsPanel(self._experiment_simulation_request, self)
+        experiment_scroll = QScrollArea()
+        experiment_scroll.setWidgetResizable(True)
+        experiment_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        experiment_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        experiment_scroll.setWidget(self.experiments_panel)
+        self.experiments_tab_index = self.settings_tabs.addTab(experiment_scroll, 'Experiments')
         settings_layout.addWidget(self.settings_tabs)
 
         settings_widget.setLayout(settings_layout)
@@ -341,6 +354,11 @@ class MainWindow(QMainWindow):
         preview_title = QLabel("Preview & results")
         preview_title.setObjectName("sectionTitle")
         preview_layout.addWidget(preview_title)
+        self.result_stack = QStackedWidget()
+        preview_layout.addWidget(self.result_stack, 1)
+        simulation_view = QWidget()
+        preview_layout = QVBoxLayout(simulation_view)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
         self.preview_canvas = PreviewCanvas()
         self.preview_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.preview_canvas.connect_events()
@@ -353,6 +371,7 @@ class MainWindow(QMainWindow):
         self.anim_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.anim_canvas.setVisible(False)
         preview_layout.addWidget(self.anim_canvas)
+        install_figure_menu(self.anim_canvas, self, enabled=lambda: self.sim_history is not None)
         # --- 新增動畫控制元件 ---
         anim_ctrl_layout = QHBoxLayout()
         self.play_btn = QPushButton("Play")
@@ -376,7 +395,8 @@ class MainWindow(QMainWindow):
         primary_actions.addWidget(self.download_btn)
         primary_actions.addWidget(self.run_btn)
         preview_layout.addLayout(primary_actions)
-        preview_widget.setLayout(preview_layout)
+        self.result_stack.addWidget(simulation_view)
+        self.result_stack.addWidget(self.experiments_panel.result_widget)
         workspace_splitter.addWidget(preview_widget)
         workspace_splitter.setStretchFactor(0, 0)
         workspace_splitter.setStretchFactor(1, 1)
@@ -389,6 +409,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFixedWidth(220)
         self.status_bar.addPermanentWidget(self.progress_bar)
         self.setStatusBar(self.status_bar)
+        self.experiments_panel.status_changed.connect(self.status_bar.showMessage)
+        self.experiments_panel.busy_changed.connect(self._on_experiment_busy)
+        self.settings_tabs.currentChanged.connect(self._on_settings_tab_changed)
 
         self.setCentralWidget(main_widget)
         self.setStyleSheet("""
@@ -520,7 +543,7 @@ class MainWindow(QMainWindow):
         return (self.grid_shape_x.value(), self.grid_shape_y.value())
 
     def load_template(self, filename):
-        template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates')
+        template_dir = str(resource_path('templates'))
         file_path = os.path.join(template_dir, filename)
         if not os.path.exists(file_path):
             return
@@ -657,6 +680,9 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Movement applied. Cell number: {cell_count}")
 
     def on_run_simulation(self):
+        if self.experiments_panel.worker is not None:
+            self.status_bar.showMessage('Wait for the experiment to finish or cancel it first.')
+            return
         if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
             self.run_btn.setText("Run Simulation")
@@ -797,6 +823,52 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Animation previewed.")
         self.save_config()
 
+    def _experiment_simulation_request(self):
+        if ((getattr(self, 'worker', None) is not None and self.worker.isRunning())
+                or (getattr(self, 'export_worker', None) is not None and self.export_worker.isRunning())):
+            raise ValueError('Wait for the current simulation or export to finish first')
+        preview_grid = self.preview_canvas.get_grid()
+        if preview_grid is None:
+            self.on_preview()
+            preview_grid = self.preview_canvas.get_grid()
+        if preview_grid is None:
+            raise ValueError('Generate a valid grid first')
+        movement = MovementPlan(
+            random_strength=float(self.move_random_strength.text()) if self.move_random.isChecked() else 0.0,
+            away_strength=float(self.move_away_strength.text()) if self.move_away.isChecked() else 0.0,
+            convergent_strength=float(self.move_ce_strength.text()) if self.move_ce.isChecked() else 0.0,
+            repulsion_strength=float(self.move_repulsion_strength.text()) if self.move_repulsion.isChecked() else 0.0,
+            vertex_strength=float(self.move_vertex_model_strength.text()) if self.move_vertex_model.isChecked() else 0.0,
+        )
+        lifecycle = CellLifecyclePlan(
+            division_count=self.move_division_n.value() if self.move_division.isChecked() else 0,
+            division_mode=self.move_division_method.currentText(),
+            apoptosis_count=self.move_apoptosis_n.value() if self.move_apoptosis.isChecked() else 0,
+            apoptosis_mode=self.move_apoptosis_method.currentText(),
+        )
+        return SimulationRequest(
+            grid=VoronoiGrid.from_cells(preview_grid.copy_cells()),
+            duration=float(self.T_edit.text()), params_source=self.params_edit.toPlainText(),
+            ode_source=self.ode_edit.toPlainText(), movement=movement, lifecycle=lifecycle,
+        )
+
+    def _on_settings_tab_changed(self, index):
+        experiments = index == self.experiments_tab_index
+        self.result_stack.setCurrentIndex(1 if experiments else 0)
+        if experiments and self.experiments_panel.worker is None:
+            self.experiments_panel.refresh_targets()
+
+    def _on_experiment_busy(self, busy):
+        # Model code uses NumPy's global RNG. Serialize simulations and sweeps
+        # to preserve reproducibility and prevent conflicting result updates.
+        self.run_btn.setEnabled(not busy)
+        self.download_btn.setEnabled(not busy and self.simulation_result is not None)
+        self.preview_btn.setEnabled(not busy)
+        self.apply_move_btn.setEnabled(not busy)
+        self.menuBar().setEnabled(not busy)
+        for index in range(self.experiments_tab_index):
+            self.settings_tabs.setTabEnabled(index, not busy)
+
     def on_simulation_error(self, err_msg):
         self.run_btn.setText("Run Simulation")
         self.download_btn.setEnabled(self.sim_history is not None)
@@ -807,6 +879,9 @@ class MainWindow(QMainWindow):
         self._start_results_export()
 
     def _start_results_export(self):
+        if self.experiments_panel.worker is not None:
+            self.status_bar.showMessage('Wait for the experiment to finish or cancel it first.')
+            return
         import datetime
 
         if getattr(self, 'export_worker', None) is not None and self.export_worker.isRunning():
@@ -922,6 +997,7 @@ class MainWindow(QMainWindow):
             'repeats': self.repeats_edit.text(),
             'grid_mode': self.grid_mode_combo.currentIndex()
         }
+        config['experiments'] = self.experiments_panel.settings()
         if save_path is None:
             save_path = CONFIG_PATH
         try:
@@ -987,6 +1063,8 @@ class MainWindow(QMainWindow):
         self.replicate_edit.setText(config.get('replicate', '5'))
         self.repeats_edit.setText(config.get('repeats', '5'))
         self.grid_mode_combo.setCurrentIndex(config.get('grid_mode', 0))
+        if 'experiments' in config:
+            self.experiments_panel.restore_settings(config['experiments'])
 
     def get_color_func(self):
         import numpy as np
@@ -1034,6 +1112,19 @@ class MainWindow(QMainWindow):
             return local_vars['ode'], local_vars.get('mechanics', None)
 
     def closeEvent(self, event):
+        experiment_worker = self.experiments_panel.worker
+        if experiment_worker is not None and experiment_worker.isRunning():
+            experiment_worker.cancel()
+            if not experiment_worker.wait(3000):
+                self.status_bar.showMessage('Finishing experiment cancellation; close again shortly.')
+                event.ignore()
+                return
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            if not self.worker.wait(3000):
+                self.status_bar.showMessage('Finishing simulation cancellation; close again shortly.')
+                event.ignore()
+                return
         if getattr(self, 'export_worker', None) is not None and self.export_worker.isRunning():
             self.export_worker.cancel()
             if not self.export_worker.wait(3000):
@@ -1091,13 +1182,16 @@ class MainWindow(QMainWindow):
     def on_save_frame(self):
         if not hasattr(self, 'anim_canvas'):
             return
-        from PyQt6.QtWidgets import QFileDialog
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save current image", "frame.png", "PNG Files (*.png);;All Files (*)")
-        if file_path:
-            self.anim_canvas.figure.savefig(file_path)
-            self.status_bar.showMessage(f"Image saved: {file_path}")
+        try:
+            path = save_figure_dialog(self, self.anim_canvas.figure)
+            if path:
+                self.status_bar.showMessage(f'Image saved: {path}')
+        except Exception as error:
+            self.status_bar.showMessage(f'Image export failed: {error}')
 
     def on_anim_click(self, event):
+        if event.button != 1:
+            return
         if getattr(self, 'is_anim_playing', False):
             return
         if event.inaxes is None:
@@ -1147,6 +1241,7 @@ class MainWindow(QMainWindow):
         
         fig = Figure()
         canvas = FigureCanvasQTAgg(fig)
+        install_figure_menu(canvas, dlg, 'cell_trace.pdf')
         layout.addWidget(canvas)
         
         btn_download = QPushButton("Download PDF")

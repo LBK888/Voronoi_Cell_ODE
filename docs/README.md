@@ -4,6 +4,17 @@
 
 This guide provides detailed instructions on how to write the three core scripting components in the Voronoi Cell ODE Simulation GUI: `ode()`, `params`, and `color_func()`. These components define the mathematical rules, simulation parameters, and visual representation of your cell models.
 
+For implementing a supplied paper, see the project-local [paper-to-voronoi-ode skill](../skills/paper-to-voronoi-ode/SKILL.md) and its executable model validator. For two-axis response maps, see [Experiments](experiments.md).
+
+Colorbars are shared by GUI and MP4 rendering. Simple legacy color functions infer colormaps from unique `plt.cm.NAME` occurrences in source order. For repeated/reordered colormaps, explicitly add metadata to Params:
+
+```python
+colorbars=[dict(variable=0, cmap='Reds', label='A'),
+           dict(variable=1, cmap='Blues', label='B')]
+```
+
+Use one state column per entry, with the same colormap and current-frame normalization used in `color_func`. An explicit list replaces automatic inference; `colorbars=[]` deliberately omits legends. Composite signals need a separate display interpretation rather than a misleading single-species label. Save Frame defaults to editable PDF; result canvases have a right-click copy/save menu.
+
 ---
 
 ## 1. The `ode()` Function
