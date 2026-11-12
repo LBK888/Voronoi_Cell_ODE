@@ -11,8 +11,7 @@ analysis = Analysis(
     binaries=[(imageio_ffmpeg.get_ffmpeg_exe(), 'bin')],
     datas=[
         (str(project / 'config_example.json'), '.'),
-        (str(project / 'templates'), 'templates'),
-        (str(project / 'skills'), 'skills'),
+        (str(project / 'docs' / 'agent-cli.md'), 'docs'),
         (str(notice_dir), 'third_party'),
     ],
     hiddenimports=['openpyxl', 'h5py', 'PyQt6.Qsci', 'gui.node_editor',

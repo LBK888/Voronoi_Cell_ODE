@@ -14,7 +14,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import numpy as np
 import pandas as pd
-from PyQt6.QtCore import QPoint, QCoreApplication, QEvent
+from PyQt6.QtCore import QPoint, QPointF, QCoreApplication, QEvent, QMimeData, QUrl, Qt
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import QApplication
 
 from gui.figure_export import save_figure_dialog
@@ -30,6 +31,8 @@ class ExperimentUiTests(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.data_patch = patch.dict(os.environ, {'VORONOI_CELL_ODE_DATA_DIR': self.temp.name})
+        self.data_patch.start()
         self.config_patch = patch('gui.main_window.CONFIG_PATH', str(Path(self.temp.name, 'config.json')))
         self.example_patch = patch('gui.main_window.CONFIG_EXAMPLE_PATH', str(Path(self.temp.name, 'no-example.json')))
         self.config_patch.start()
@@ -64,6 +67,7 @@ class ExperimentUiTests(unittest.TestCase):
         self.config_patch.stop()
         self.example_patch.stop()
         self.logger_patch.stop()
+        self.data_patch.stop()
         self.temp.cleanup()
 
     def wait_until(self, predicate):
@@ -72,6 +76,49 @@ class ExperimentUiTests(unittest.TestCase):
             self.app.processEvents()
             time.sleep(.01)
         self.assertTrue(predicate(), self.window.status_bar.currentMessage())
+
+    def test_save_menu_and_drop_model_with_imported_grid(self):
+        self.window.grid_mode_combo.setCurrentIndex(3)
+        path = Path(self.temp.name, 'templates', '我的模板.json')
+        with patch('gui.main_window.QFileDialog.getSaveFileName', return_value=(str(path.with_suffix('')), '')):
+            self.window.save_template_dialog()
+        config = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(config['cell_positions'], self.cells.tolist())
+        self.window.refresh_templates_menu()
+        self.assertIn(path.stem, [action.text() for action in self.window.template_actions])
+
+        self.window.T_edit.setText('9')
+        self.window.simulation_result = object()
+        self.window.download_btn.setEnabled(True)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path))])
+        enter = QDragEnterEvent(QPoint(1, 1), Qt.DropAction.CopyAction, mime,
+                                Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        drop = QDropEvent(QPointF(1, 1), Qt.DropAction.CopyAction, mime,
+                          Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        self.app.sendEvent(self.window.params_edit, enter)
+        self.app.sendEvent(self.window.params_edit, drop)
+        self.assertTrue(drop.isAccepted())
+        self.assertEqual(self.window.T_edit.text(), '.4')
+        np.testing.assert_allclose(self.window.preview_canvas.get_grid().copy_cells(), self.cells)
+        self.assertIsNone(self.window.simulation_result)
+        self.assertFalse(self.window.download_btn.isEnabled())
+
+        broken = path.with_name('invalid.json')
+        broken.write_text('{"grid_shape_x": 2}', encoding='utf-8')
+        self.assertFalse(self.window.open_model(broken))
+        self.assertEqual(self.window.T_edit.text(), '.4')
+        self.window.run_btn.click()
+        self.wait_until(lambda: self.window.simulation_result is not None)
+        np.testing.assert_allclose(self.window.simulation_result.history[-1], 0.9)
+
+    def test_agent_menu_persists_cli_preference(self):
+        from automation_cli import cli_enabled
+        self.assertFalse(cli_enabled())
+        self.window.enable_cli_action.setChecked(True)
+        self.assertTrue(cli_enabled())
+        self.window.enable_cli_action.setChecked(False)
+        self.assertFalse(cli_enabled())
 
     def test_real_tab_worker_heatmap_exports_and_settings_roundtrip(self):
         tabs = self.window.settings_tabs

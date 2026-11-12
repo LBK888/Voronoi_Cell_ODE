@@ -50,6 +50,8 @@
 
 **Windows 直接執行版：** 從 [GitHub Releases](https://github.com/LBK888/Voronoi_Cell_ODE/releases) 下載 `VoronoiCellODE.exe`，不需安裝 Python 或 FFmpeg。設定保存在使用者資料夾，詳細說明與自行打包方式見 [Windows 發行指南](docs/windows-release.md)。
 
+Windows 可攜 ZIP 會將可編輯的 `templates/` 放在 EXE 旁。可在 **Templates → Save Current Model as Template** 儲存新模板，或拖曳 JSON 到主視窗載入。需要由 agent 執行時，在 **Agent → Enable Agent CLI** 啟用，再開啟 **Connection Instructions** 複製操作說明。[Agent CLI 指南](docs/agent-cli.md)
+
 1. **複製此倉庫**
 
    ```bash

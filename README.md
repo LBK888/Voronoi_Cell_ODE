@@ -51,6 +51,8 @@ This tool allows you to design, preview, and simulate various cell arrangements 
 
 **Windows executable:** Download `VoronoiCellODE.exe` from [GitHub Releases](https://github.com/LBK888/Voronoi_Cell_ODE/releases). Python and FFmpeg are included. See the [Windows release guide](docs/windows-release.md) for persistent settings and build instructions.
 
+The portable Windows ZIP places editable `templates/` beside the EXE. Save a new model from **Templates → Save Current Model as Template**, or drag a model JSON into the main window. Enable headless simulations and sweeps under **Agent → Enable Agent CLI**. [Agent CLI instructions](docs/agent-cli.md)
+
 For this workspace, maintain code/docs in the pCloud checkout and execute/test in `F:\Voronoi_Cell_ODE` using its existing `.venv`. No virtual environment is needed in the synced source folder.
 
 1. **Clone this repository**  

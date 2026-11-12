@@ -3,11 +3,12 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGroupBox, QFormLayout, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QFileDialog, QProgressBar, QStatusBar, QSpinBox, QSlider,
-    QDoubleSpinBox, QScrollArea, QMenuBar, QMenu, QTabWidget, QSplitter,
-    QSizePolicy, QFrame, QDialog, QStackedWidget
+    QDoubleSpinBox, QScrollArea, QTabWidget, QSplitter,
+    QSizePolicy, QFrame, QDialog, QStackedWidget, QDialogButtonBox, QTextBrowser
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QColor, QPalette, QAction, QKeySequence
+from PyQt6.QtCore import Qt, QTimer, QEvent, QUrl
+from PyQt6.QtGui import QFont, QColor, QPalette, QAction, QKeySequence, QDesktopServices
+from pathlib import Path
 from gui.logger import setup_logger
 from gui.preview_canvas import PreviewCanvas
 import numpy as np
@@ -21,11 +22,9 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import json
 
-from voronoi_grid import MovementPlan, VoronoiGrid
+from voronoi_grid import VoronoiGrid
 from voronoi_animation import VoronoiAnimator
 from gui.simulation_session import (
-    CellLifecyclePlan,
-    SimulationRequest,
     SimulationSession,
 )
 from gui.simulation_worker import SimulationWorker
@@ -34,6 +33,8 @@ from gui.figure_export import install_figure_menu, save_figure_dialog
 from gui.experiments_panel import ExperimentsPanel
 from gui.input_wheel_guard import disable_wheel_value_changes
 from gui.app_paths import data_path, resource_path, configure_ffmpeg
+from gui.model_files import model_grid, model_request, normalize_model, read_model, template_files, user_templates, write_json
+from automation_cli import cli_enabled, set_cli_enabled
 
 CONFIG_PATH = str(data_path('config.json'))
 CONFIG_EXAMPLE_PATH = str(resource_path('config_example.json'))
@@ -46,6 +47,9 @@ class MainWindow(QMainWindow):
         self.logger = setup_logger()
         self.setWindowTitle("Voronoi Notch Simulation")
         self.resize(1280, 880)
+        self._applying_config = False
+        self._imported_cells = None
+        self.setAcceptDrops(True)
         self.init_ui()
         self.load_config()
         self.sim_history = None
@@ -56,10 +60,20 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.export_worker = None
         self.logger.addHandler(GUIStatusHandler(self.status_bar))
+        QApplication.instance().installEventFilter(self)
 
     def init_ui(self):
         menubar = self.menuBar()
-        template_menu = menubar.addMenu('Templates')
+        self.template_menu = menubar.addMenu('Templates')
+        open_model = self.template_menu.addAction('Open Model JSON...')
+        open_model.setShortcut(QKeySequence('Ctrl+O'))
+        open_model.triggered.connect(self.open_model_dialog)
+        self.template_menu.addAction('Save Current Model as Template...', self.save_template_dialog)
+        self.template_menu.addAction('Open User Templates Folder', self.open_templates_folder)
+        self.template_menu.addSeparator()
+        self.template_actions = []
+        self.template_menu.aboutToShow.connect(self.refresh_templates_menu)
+        self.refresh_templates_menu()
         model_menu = menubar.addMenu('Model')
         self.open_node_editor_action = QAction('Open Visual Node Editor...', self)
         self.open_node_editor_action.setShortcut(QKeySequence('Ctrl+Shift+N'))
@@ -68,14 +82,12 @@ class MainWindow(QMainWindow):
         )
         self.open_node_editor_action.triggered.connect(self.open_node_editor)
         model_menu.addAction(self.open_node_editor_action)
-        
-        template_dir = str(resource_path('templates'))
-        if os.path.exists(template_dir) and os.path.isdir(template_dir):
-            for filename in sorted(os.listdir(template_dir)):
-                if filename.endswith('.json'):
-                    name = filename[:-5]
-                    action = template_menu.addAction(name)
-                    action.triggered.connect(lambda checked, f=filename: self.load_template(f))
+        agent_menu = menubar.addMenu('Agent')
+        self.enable_cli_action = agent_menu.addAction('Enable Agent CLI')
+        self.enable_cli_action.setCheckable(True)
+        self.enable_cli_action.setChecked(cli_enabled())
+        self.enable_cli_action.toggled.connect(self.toggle_agent_cli)
+        agent_menu.addAction('Connection Instructions...', self.show_agent_instructions)
 
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
@@ -494,18 +506,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Parse error: {e}")
             return
 
-        while self.dynamic_params_layout.count():
-            item = self.dynamic_params_layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-            elif item.layout() is not None:
-                while item.layout().count():
-                    child = item.layout().takeAt(0)
-                    if child.widget():
-                        child.widget().deleteLater()
-                item.layout().deleteLater()
-
-        self.dynamic_widgets = {}
+        self.clear_parameter_controls()
 
         def update_dict_text():
             import pprint
@@ -542,21 +543,155 @@ class MainWindow(QMainWindow):
     def get_grid_shape(self):
         return (self.grid_shape_x.value(), self.grid_shape_y.value())
 
-    def load_template(self, filename):
-        template_dir = str(resource_path('templates'))
-        file_path = os.path.join(template_dir, filename)
-        if not os.path.exists(file_path):
-            return
+    def clear_parameter_controls(self):
+        while self.dynamic_params_layout.rowCount():
+            self.dynamic_params_layout.removeRow(0)
+        self.dynamic_widgets = {}
+
+    def refresh_templates_menu(self):
+        for action in self.template_actions:
+            self.template_menu.removeAction(action)
+            action.deleteLater()
+        self.template_actions = []
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            if config:
-                self.apply_config(config)
-                self.on_generate_params()
-                self.status_bar.showMessage(f"Loaded template: {filename[:-5]}")
-        except Exception as e:
-            self.logger.error(f"Failed to load template {filename}: {e}")
-            self.status_bar.showMessage(f"Failed to load template {filename}: {e}")
+            files = template_files()
+        except OSError as error:
+            action = self.template_menu.addAction(f'Cannot read templates: {error}')
+            action.setEnabled(False)
+            self.template_actions.append(action)
+            return
+        for path in files:
+            action = self.template_menu.addAction(path.stem)
+            action.setStatusTip(str(path))
+            action.triggered.connect(lambda checked, file=path: self.open_model(file))
+            self.template_actions.append(action)
+        if not files:
+            action = self.template_menu.addAction('No template JSON files found')
+            action.setEnabled(False)
+            self.template_actions.append(action)
+
+    def open_model_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Open Model JSON', str(user_templates()), 'Model JSON (*.json)')
+        if path:
+            self.open_model(path)
+
+    def save_template_dialog(self):
+        try:
+            directory = user_templates()
+            directory.mkdir(parents=True, exist_ok=True)
+            path, _ = QFileDialog.getSaveFileName(self, 'Save Current Model as Template',
+                                                 str(directory / 'model.json'), 'Model JSON (*.json)')
+            if not path:
+                return
+            path = Path(path)
+            if path.suffix.lower() != '.json':
+                path = path.with_name(path.name + '.json')
+                if path.exists():
+                    self.status_bar.showMessage('Choose the existing .json file explicitly to confirm replacement.')
+                    return
+            self.save_template(path)
+            self.status_bar.showMessage(f'Saved template: {path}')
+        except (OSError, ValueError, SyntaxError) as error:
+            self.status_bar.showMessage(f'Cannot save template: {error}')
+
+    def save_template(self, path):
+        write_json(path, normalize_model(self.current_config()))
+
+    def open_templates_folder(self):
+        try:
+            directory = user_templates()
+            directory.mkdir(parents=True, exist_ok=True)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve()))):
+                self.status_bar.showMessage(f'Templates folder: {directory}')
+        except OSError as error:
+            self.status_bar.showMessage(f'Cannot open templates folder: {error}')
+
+    def open_model(self, path):
+        if self.experiments_panel.worker is not None or any(
+            worker is not None and worker.isRunning() for worker in (self.worker, self.export_worker)
+        ):
+            self.status_bar.showMessage('Wait for the current job to finish before opening a model.')
+            return False
+        try:
+            config = read_model(path)
+            grid = model_grid(config) if config['grid_mode'] == 3 and 'cell_positions' in config else None
+        except Exception as error:
+            self.status_bar.showMessage(f'Cannot open {Path(path).name}: {error}')
+            return False
+        self.settings_tabs.setCurrentIndex(0)
+        self.apply_config(config)
+        self.clear_parameter_controls()
+        self.params = None
+        self.grid = grid
+        self.preview_canvas.set_grid(grid)
+        self.preview_canvas.show()
+        self.anim_canvas.hide()
+        self.anim_timer.stop()
+        self.anim = None
+        self.is_anim_playing = False
+        self.play_btn.setText('Play')
+        self.simulation_result = self.sim_history = self.cell_positions_history = None
+        self.anim_canvas.figure.clear()
+        for widget in (self.play_btn, self.frame_slider, self.save_frame_btn, self.download_btn):
+            widget.setEnabled(False)
+        panel = self.experiments_panel
+        panel.result = None
+        panel.figure.clear()
+        panel.canvas.draw_idle()
+        panel.summary.setText('Configure the X and Y axes, then run an experiment.')
+        panel.progress_label.clear()
+        panel.pdf_btn.setEnabled(False)
+        panel.data_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.save_config()
+        self.status_bar.showMessage(f'Loaded {Path(path).name}. Press Run Simulation when ready.')
+        return True
+
+    def eventFilter(self, watched, event):
+        # Text editors also accept drops. Route model files before they can
+        # insert a filesystem URL into a parameter or source-code field.
+        if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            if isinstance(watched, QWidget) and (watched is self or self.isAncestorOf(watched)):
+                urls = event.mimeData().urls()
+                if len(urls) == 1 and urls[0].isLocalFile():
+                    path = Path(urls[0].toLocalFile())
+                    if path.suffix.lower() == '.json':
+                        event.acceptProposedAction()
+                        if event.type() == QEvent.Type.Drop:
+                            self.open_model(path)
+                        return True
+        return super().eventFilter(watched, event)
+
+    def toggle_agent_cli(self, enabled):
+        try:
+            set_cli_enabled(enabled)
+            self.status_bar.showMessage('Agent CLI enabled.' if enabled else 'Agent CLI disabled.')
+        except OSError as error:
+            blocked = self.enable_cli_action.blockSignals(True)
+            self.enable_cli_action.setChecked(cli_enabled())
+            self.enable_cli_action.blockSignals(blocked)
+            self.status_bar.showMessage(f'Cannot change Agent CLI setting: {error}')
+
+    def show_agent_instructions(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Agent CLI Connection Instructions')
+        dialog.resize(820, 640)
+        layout = QVBoxLayout(dialog)
+        launcher = sys.executable if getattr(sys, 'frozen', False) else str(resource_path('windows_launcher.py'))
+        location = QLabel(launcher)
+        location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        location.setWordWrap(True)
+        layout.addWidget(location)
+        guide = QTextBrowser()
+        instructions = resource_path('docs/agent-cli.md').read_text(encoding='utf-8')
+        guide.setMarkdown(instructions)
+        layout.addWidget(guide)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        copy = buttons.addButton('Copy instructions', QDialogButtonBox.ButtonRole.ActionRole)
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(f'{launcher}\n\n{instructions}'))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def open_node_editor(self):
         from gui.node_editor import NodeEditorDialog, NodeEditorDocument
@@ -599,7 +734,7 @@ class MainWindow(QMainWindow):
         from .default_color_func import get_default_color_func
         return get_default_color_func()
 
-    def on_preview(self):
+    def on_preview(self, *, use_saved_coordinates=False):
         self.anim_timer.stop()
         self.preview_canvas.setVisible(True)
         self.anim_canvas.setVisible(False)
@@ -616,12 +751,15 @@ class MainWindow(QMainWindow):
         mode = mode_map[self.grid_mode_combo.currentText()]
         from voronoi_grid import VoronoiGrid
         try:
-            if mode == 'import':
+            if mode == 'import' and use_saved_coordinates and self._imported_cells is not None:
+                grid = VoronoiGrid.from_cells(self._imported_cells, cell_dist=cell_dist)
+            elif mode == 'import':
                 file_path, _ = QFileDialog.getOpenFileName(self, "Import Cell Coordinates", "", "Table Files (*.xlsx *.xls *.csv);;Text Files (*.txt);;All Files (*)")
                 if not file_path:
                     self.status_bar.showMessage("Import cancelled.")
                     return
                 grid = VoronoiGrid(grid_shape=grid_shape, cell_dist=cell_dist, pos_rand=pos_rand, mode=mode, import_path=file_path)
+                self._imported_cells = grid.copy_cells().tolist()
             else:
                 grid = VoronoiGrid(grid_shape=grid_shape, cell_dist=cell_dist, pos_rand=pos_rand, mode=mode)
             cell_count = len(grid.cells)
@@ -641,7 +779,7 @@ class MainWindow(QMainWindow):
         # 取得目前細胞座標
         grid = self.preview_canvas.get_grid()
         if grid is None:
-            self.on_preview()
+            self.on_preview(use_saved_coordinates=True)
             grid = self.preview_canvas.get_grid()
             if grid is None:
                 return
@@ -697,66 +835,24 @@ class MainWindow(QMainWindow):
             self.anim_canvas.figure.clf()
         preview_grid = self.preview_canvas.get_grid()
         if preview_grid is None or len(preview_grid.cells) < 3:
-            self.on_preview()
+            self.on_preview(use_saved_coordinates=True)
             preview_grid = self.preview_canvas.get_grid()
             if preview_grid is None or len(preview_grid.cells) < 3:
                 self.status_bar.showMessage("Cell number not enough, please generate cell first")
                 return
-        grid = VoronoiGrid.from_cells(preview_grid.copy_cells())
+        grid = VoronoiGrid.from_cells(preview_grid.copy_cells(), cell_dist=preview_grid.cell_dist)
         
         # 如果沒有定義sigma，init_Y等於全部放0
         # 自動偵測物質數 n_var, 建立 init_Y
         # 3. ODE 預設值（略，需進階分析）
         # 4. fallback 預設 4
         try:
-            T = float(self.T_edit.text())
+            float(self.T_edit.text())
         except ValueError:
-            T = 30.0
             self.T_edit.setText('30.0')
 
         try:
-            movement = MovementPlan(
-                random_strength=(
-                    float(self.move_random_strength.text())
-                    if self.move_random.isChecked() else 0.0
-                ),
-                away_strength=(
-                    float(self.move_away_strength.text())
-                    if self.move_away.isChecked() else 0.0
-                ),
-                convergent_strength=(
-                    float(self.move_ce_strength.text())
-                    if self.move_ce.isChecked() else 0.0
-                ),
-                repulsion_strength=(
-                    float(self.move_repulsion_strength.text())
-                    if self.move_repulsion.isChecked() else 0.0
-                ),
-                vertex_strength=(
-                    float(self.move_vertex_model_strength.text())
-                    if self.move_vertex_model.isChecked() else 0.0
-                ),
-            )
-            lifecycle = CellLifecyclePlan(
-                division_count=(
-                    self.move_division_n.value()
-                    if self.move_division.isChecked() else 0
-                ),
-                division_mode=self.move_division_method.currentText(),
-                apoptosis_count=(
-                    self.move_apoptosis_n.value()
-                    if self.move_apoptosis.isChecked() else 0
-                ),
-                apoptosis_mode=self.move_apoptosis_method.currentText(),
-            )
-            request = SimulationRequest(
-                grid=grid,
-                duration=T,
-                params_source=self.params_edit.toPlainText(),
-                ode_source=self.ode_edit.toPlainText(),
-                movement=movement,
-                lifecycle=lifecycle,
-            )
+            request = model_request(self.current_config(), grid)
             session = SimulationSession(request)
         except Exception as error:
             self.status_bar.showMessage(f"Simulation configuration error: {error}")
@@ -829,28 +925,12 @@ class MainWindow(QMainWindow):
             raise ValueError('Wait for the current simulation or export to finish first')
         preview_grid = self.preview_canvas.get_grid()
         if preview_grid is None:
-            self.on_preview()
+            self.on_preview(use_saved_coordinates=True)
             preview_grid = self.preview_canvas.get_grid()
         if preview_grid is None:
             raise ValueError('Generate a valid grid first')
-        movement = MovementPlan(
-            random_strength=float(self.move_random_strength.text()) if self.move_random.isChecked() else 0.0,
-            away_strength=float(self.move_away_strength.text()) if self.move_away.isChecked() else 0.0,
-            convergent_strength=float(self.move_ce_strength.text()) if self.move_ce.isChecked() else 0.0,
-            repulsion_strength=float(self.move_repulsion_strength.text()) if self.move_repulsion.isChecked() else 0.0,
-            vertex_strength=float(self.move_vertex_model_strength.text()) if self.move_vertex_model.isChecked() else 0.0,
-        )
-        lifecycle = CellLifecyclePlan(
-            division_count=self.move_division_n.value() if self.move_division.isChecked() else 0,
-            division_mode=self.move_division_method.currentText(),
-            apoptosis_count=self.move_apoptosis_n.value() if self.move_apoptosis.isChecked() else 0,
-            apoptosis_mode=self.move_apoptosis_method.currentText(),
-        )
-        return SimulationRequest(
-            grid=VoronoiGrid.from_cells(preview_grid.copy_cells()),
-            duration=float(self.T_edit.text()), params_source=self.params_edit.toPlainText(),
-            ode_source=self.ode_edit.toPlainText(), movement=movement, lifecycle=lifecycle,
-        )
+        grid = VoronoiGrid.from_cells(preview_grid.copy_cells(), cell_dist=preview_grid.cell_dist)
+        return model_request(self.current_config(), grid)
 
     def _on_settings_tab_changed(self, index):
         experiments = index == self.experiments_tab_index
@@ -953,20 +1033,15 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Export failed. See app.log for details.")
         self.logger.error(error_message)
 
-    def save_config(self, save_path=None):
-        if save_path is not None and not isinstance(
-            save_path, (str, bytes, os.PathLike)
-        ):
-            save_path = None
+    def current_config(self):
         ode_text = self.ode_edit.toPlainText().strip()
         params_text = self.params_edit.toPlainText().strip()
         color_func_text = self.color_func_edit.toPlainText().strip()
-        #只有儲存預設config.json才會自動補上預設值
-        if not ode_text and save_path is None:
+        if not ode_text:
             ode_text = self.get_default_ode()
-        if not params_text and save_path is None:
+        if not params_text:
             params_text = self.get_default_params()
-        if not color_func_text and save_path is None:
+        if not color_func_text:
             color_func_text = self.get_default_color_func()
         config = {
             'grid_shape_x': self.grid_shape_x.value(),
@@ -998,11 +1073,24 @@ class MainWindow(QMainWindow):
             'grid_mode': self.grid_mode_combo.currentIndex()
         }
         config['experiments'] = self.experiments_panel.settings()
+        if config['grid_mode'] == 3:
+            grid = self.preview_canvas.get_grid()
+            if grid is not None and grid.mode in ('custom', 'import'):
+                config['cell_positions'] = grid.copy_cells().tolist()
+            elif self._imported_cells is not None:
+                config['cell_positions'] = self._imported_cells
+        return config
+
+    def save_config(self, save_path=None):
+        if self._applying_config:
+            return
+        if save_path is not None and not isinstance(save_path, (str, os.PathLike)):
+            save_path = None
+        config = self.current_config()
         if save_path is None:
             save_path = CONFIG_PATH
         try:
-            with open(save_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+            write_json(save_path, config)
         except Exception as e:
             print(f"[Config] 儲存失敗: {e}")
         return config
@@ -1026,6 +1114,14 @@ class MainWindow(QMainWindow):
             self.apply_config(config)
 
     def apply_config(self, config):
+        self._applying_config = True
+        try:
+            self._apply_config_fields(config)
+        finally:
+            self._applying_config = False
+
+    def _apply_config_fields(self, config):
+        self._imported_cells = config.get('cell_positions')
         self.grid_shape_x.setValue(config.get('grid_shape_x', 20))
         self.grid_shape_y.setValue(config.get('grid_shape_y', 20))
         self.cell_dist_edit.setText(config.get('cell_dist', '1.0'))
@@ -1063,8 +1159,7 @@ class MainWindow(QMainWindow):
         self.replicate_edit.setText(config.get('replicate', '5'))
         self.repeats_edit.setText(config.get('repeats', '5'))
         self.grid_mode_combo.setCurrentIndex(config.get('grid_mode', 0))
-        if 'experiments' in config:
-            self.experiments_panel.restore_settings(config['experiments'])
+        self.experiments_panel.restore_settings(config.get('experiments', {}))
 
     def get_color_func(self):
         import numpy as np

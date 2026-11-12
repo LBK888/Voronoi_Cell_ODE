@@ -9,13 +9,13 @@ import sys
 import traceback
 
 
-def smoke_test(app, window, output):
-    """Exercise bundled libraries, templates, UI, simulation and exports."""
+def smoke_test(app, window, output, model):
+    """Exercise bundled libraries, external templates, UI, simulation and exports."""
     import numpy as np
     import pandas as pd
     import h5py
     from matplotlib.animation import FFMpegWriter
-    from gui.app_paths import resource_path
+    from gui.model_files import read_model, template_files, user_templates
     from gui.experiments import ExperimentRequest, ExperimentRunner, SweepAxis
     from gui.node_editor import NodeEditorDialog, NodeEditorDocument
     from gui.code_editor_window import CodeEditorDialog
@@ -23,8 +23,8 @@ def smoke_test(app, window, output):
     from voronoi_animation import VoronoiAnimator
     from voronoi_grid import VoronoiGrid
 
-    config = json.loads(resource_path('skills/paper-to-voronoi-ode/assets/hill-demo.json').read_text(encoding='utf-8'))
-    window.apply_config(config)
+    config = read_model(model)
+    assert window.open_model(model)
     window.grid_shape_x.setValue(5)
     window.grid_shape_y.setValue(5)
     window.T_edit.setText('0.2')
@@ -72,10 +72,17 @@ def smoke_test(app, window, output):
     app.processEvents()
     window.grab().save(str(output / 'window.png'))
     window.save_config()
+    directory = user_templates()
+    directory.mkdir(parents=True, exist_ok=True)
+    saved = directory / 'Smoke Template.json'
+    window.save_template(saved)
+    assert window.open_model(saved)
+    window.enable_cli_action.setChecked(True)
     report = {
         'status': 'passed', 'frozen': bool(getattr(sys, 'frozen', False)),
         'frames': len(result.history), 'heatmap_shape': list(sweep.values.shape),
-        'templates': len(list(resource_path('templates').glob('*.json'))),
+        'templates': [str(path) for path in template_files()],
+        'saved_template': str(saved),
         'ffmpeg': FFMpegWriter.bin_path(),
         'checks': ['Qt UI', 'Numba spatial helper', 'ODE', 'PDF', 'clipboard',
                    'MP4', 'Experiments', 'CSV', 'Excel', 'HDF5', 'code editor', 'node editor'],
@@ -85,9 +92,17 @@ def smoke_test(app, window, output):
 
 def main():
     multiprocessing.freeze_support()
+    if sys.argv[1:2] == ['--cli']:
+        from automation_cli import main as run_cli
+        return run_cli(sys.argv[2:])
     parser = argparse.ArgumentParser(description='Voronoi Cell ODE')
     parser.add_argument('--smoke-test', type=Path, metavar='OUTPUT_FOLDER')
+    parser.add_argument('--smoke-model', type=Path, metavar='MODEL_JSON')
     args = parser.parse_args()
+    if args.smoke_test and not args.smoke_model:
+        if getattr(sys, 'frozen', False):
+            parser.error('--smoke-test requires --smoke-model in the EXE.')
+        args.smoke_model = Path(__file__).parent / 'skills/paper-to-voronoi-ode/assets/hill-demo.json'
     if args.smoke_test:
         args.smoke_test = args.smoke_test.resolve()
         args.smoke_test.mkdir(parents=True, exist_ok=True)
@@ -99,7 +114,7 @@ def main():
         app = QApplication(sys.argv[:1])
         window = MainWindow()
         if args.smoke_test:
-            smoke_test(app, window, args.smoke_test)
+            smoke_test(app, window, args.smoke_test, args.smoke_model)
             window.close()
             return 0
         window.show()

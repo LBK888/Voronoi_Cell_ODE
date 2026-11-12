@@ -1,11 +1,8 @@
 """Experiment controls and heatmap view, embedded after the Run settings tab."""
 
-import json
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PyQt6.QtCore import pyqtSignal
@@ -15,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.experiment_worker import ExperimentWorker
+from gui.experiment_output import draw_heatmap, export_experiment_data
 from gui.experiments import ExperimentRequest, METRICS, SweepAxis
 from gui.figure_export import install_figure_menu, save_figure_dialog
 from gui.simulation_session import SimulationSession
@@ -162,7 +160,7 @@ class ExperimentsPanel(QWidget):
             self.repeats.setValue(int(settings.get('repeats', 1)))
             self.seed.setValue(int(settings.get('seed', 0)))
             self.tail.setValue(float(settings.get('tail_percent', 25)))
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, OverflowError):
             self.status_changed.emit('Some saved experiment settings are invalid; review the controls.')
 
     def _update_estimate(self):
@@ -277,30 +275,10 @@ class ExperimentsPanel(QWidget):
         self.status_changed.emit(f'Experiment failed: {message}')
         self.progress_label.setText(message)
 
-    @staticmethod
-    def _edges(values, scale):
-        transformed = np.log(values) if scale == 'log' else values
-        edges = np.r_[transformed[0] - (transformed[1] - transformed[0]) / 2,
-                      (transformed[:-1] + transformed[1:]) / 2,
-                      transformed[-1] + (transformed[-1] - transformed[-2]) / 2]
-        return np.exp(edges) if scale == 'log' else edges
-
     def _finished(self, result):
         self.result = result
-        self.figure.clear()
-        axis = self.figure.add_subplot(111)
         request = result.request
-        cmap = colormaps['viridis'].with_extremes(bad='#C9D1D9')
-        image = axis.pcolormesh(self._edges(result.x_values, request.x.scale),
-                               self._edges(result.y_values, request.y.scale),
-                               np.ma.masked_invalid(result.values), cmap=cmap, shading='flat')
-        axis.set_xscale(request.x.scale)
-        axis.set_yscale(request.y.scale)
-        axis.set_xlabel(request.x.label + (' (initial)' if request.x.kind == 'initial' else ''))
-        axis.set_ylabel(request.y.label + (' (initial)' if request.y.kind == 'initial' else ''))
-        metric = METRICS[request.metric]
-        axis.set_title(f'{request.observable_label}\n{metric}')
-        self.figure.colorbar(image, ax=axis, label=metric)
+        draw_heatmap(self.figure, result)
         failed = sum(bool(record['error']) for record in result.records)
         self.summary.setText(f'{len(result.x_values)} × {len(result.y_values)} pixels · {request.repeats} replicate(s) / pixel · seed {request.seed} · {failed} failed run(s)')
         self.progress_label.setText('Complete. Right-click to copy the heatmap. Export Data includes replicate values, errors and model settings.'
@@ -331,14 +309,4 @@ class ExperimentsPanel(QWidget):
             self.status_changed.emit(f'Experiment data export failed: {error}')
 
     def export_data(self, path):
-        result = self.result
-        table = pd.DataFrame(result.records)
-        means = {(x, y): result.values[row, col] for row, y in enumerate(result.y_values)
-                 for col, x in enumerate(result.x_values)}
-        deviations = {(x, y): result.std[row, col] for row, y in enumerate(result.y_values)
-                      for col, x in enumerate(result.x_values)}
-        table['pixel_mean'] = [means[(r.x, r.y)] for r in table.itertuples()]
-        table['pixel_std'] = [deviations[(r.x, r.y)] for r in table.itertuples()]
-        table.to_csv(path, index=False, encoding='utf-8-sig')
-        metadata_path = Path(path).with_name(Path(path).stem + '_settings.json')
-        metadata_path.write_text(json.dumps(result.metadata(), ensure_ascii=False, indent=2), encoding='utf-8')
+        export_experiment_data(self.result, path)

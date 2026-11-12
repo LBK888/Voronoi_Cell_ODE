@@ -26,8 +26,8 @@ class PreviewCanvas(QWidget):
         self.canvas.draw()
 
     def set_grid(self, grid):
-        if not isinstance(grid, VoronoiGrid):
-            raise TypeError('grid must be a VoronoiGrid')
+        if grid is not None and not isinstance(grid, VoronoiGrid):
+            raise TypeError('grid must be a VoronoiGrid or None')
         self.grid = grid
         self.selected_idx = None
         self.dragging = False
