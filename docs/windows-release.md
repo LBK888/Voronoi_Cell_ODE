@@ -18,7 +18,8 @@ Enable automation under **Agent → Enable Agent CLI**, then open **Connection I
 
 - MP4 exports include labeled, per-frame colorbars.
 - Save Frame defaults to editable PDF; SVG/PNG and right-click clipboard copying are available.
-- Experiments follows Run, with two-axis parameter/initial-concentration sweeps, statistics, replicates and CSV/JSON export.
+- Experiments supports model parameters, initial concentrations and cell movement strengths on either axis.
+- Experiment CSV exports include the final spatial mean, rise slope, onset time and oscillation frequency. Each metric is also available in the heatmap.
 - Mouse-wheel scrolling no longer changes parameters, dropdown selections or slider values.
 - The repository includes a paper-to-ODE agent skill and a validated teaching model.
 
@@ -31,7 +32,7 @@ Use the runtime checkout on Windows with 64-bit Python 3.12:
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r packaging\requirements-windows.txt -c packaging\constraints-windows.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe packaging\build_windows.py --version 2026.11.12
+.\.venv\Scripts\python.exe packaging\build_windows.py --version 2026.11.19
 ```
 
 Build outputs stay in `build/` and `dist/`. The packaged smoke test checks the GUI, external templates, model execution, exports, editors and headless CLI jobs. `SHA256SUMS.txt` identifies the EXE and ZIP files. `third_party/` in the Windows ZIP contains dependency licenses, build package versions and FFmpeg source/build links.

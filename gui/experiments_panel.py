@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from gui.experiment_worker import ExperimentWorker
 from gui.experiment_output import draw_heatmap, export_experiment_data
 from gui.experiments import ExperimentRequest, METRICS, SweepAxis
+from gui.model_files import MOVEMENT_OPTIONS
 from gui.figure_export import install_figure_menu, save_figure_dialog
 from gui.simulation_session import SimulationSession
 
@@ -26,6 +27,7 @@ class AxisControls(QGroupBox):
         self.kind = QComboBox()
         self.kind.addItem('Model parameter', 'parameter')
         self.kind.addItem('Initial concentration (all cells)', 'initial')
+        self.kind.addItem('Cell movement strength', 'movement')
         self.target = QComboBox()
         self.minimum, self.maximum = QLineEdit('0'), QLineEdit('1')
         self.count = QSpinBox()
@@ -173,7 +175,9 @@ class ExperimentsPanel(QWidget):
     def _populate_axis(self, axis):
         previous = axis.target.currentData()
         axis.target.clear()
-        options = self.parameter_options if axis.kind.currentData() == 'parameter' else self.species_options
+        options = {'parameter': self.parameter_options, 'initial': self.species_options,
+                   'movement': [(field.replace('_', ' ').capitalize(), field)
+                                for _, field, _ in MOVEMENT_OPTIONS]}[axis.kind.currentData()]
         for label, target in options:
             axis.target.addItem(label, target)
         index = axis.target.findData(previous)

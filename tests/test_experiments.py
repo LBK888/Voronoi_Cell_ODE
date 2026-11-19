@@ -8,6 +8,7 @@ from gui.experiments import (
     measure_response,
 )
 from gui.simulation_session import SimulationRequest
+from gui.response_dynamics import response_dynamics
 from voronoi_grid import VoronoiGrid
 
 
@@ -50,6 +51,33 @@ class ExperimentTests(unittest.TestCase):
         np.testing.assert_allclose(result.values, [[10.9, 20.9], [11.5, 21.5]])
         other = ExperimentRunner(replace(request, observable=1)).run()
         np.testing.assert_allclose(other.values, 7)
+
+    def test_dynamics_use_model_time_and_require_resolved_events(self):
+        for dt in (0.1, 0.05):
+            times = np.arange(0, 30, dt)
+            ramp = response_dynamics(1 + 2 * np.maximum(times - 4, 0), dt)
+            self.assertAlmostEqual(ramp['rise_slope'], 2)
+            self.assertAlmostEqual(ramp['onset_time'], 4)
+            self.assertTrue(np.isnan(ramp['frequency']))
+            wave = np.sin(2 * np.pi * times / 4)
+            self.assertAlmostEqual(response_dynamics(wave, dt)['frequency'], .25)
+            for trace in (np.ones_like(times), -times, times[:4]):
+                self.assertTrue(all(np.isnan(x) for x in response_dynamics(trace, dt).values()))
+
+    def test_two_movement_axes_reach_simulation_and_export_features(self):
+        simulation = replace(self.simulation, duration=1.,
+                             ode_source='def ode(Y, t, params, cell_positions):\n'
+                             '    return np.full_like(Y, np.mean(cell_positions ** 2))')
+        request = replace(self.request, simulation=simulation, metric='rise_slope',
+                          x=SweepAxis('movement', 'random_strength', 0, .1, 2),
+                          y=SweepAxis('movement', 'repulsion_strength', 0, .1, 2))
+        result = ExperimentRunner(request).run()
+        self.assertTrue(np.isfinite(result.values).all())
+        self.assertNotEqual(result.values[0, 0], result.values[0, 1])
+        for record in result.records:
+            self.assertEqual(record['response'], record['rise_slope'])
+            self.assertGreater(record['final_mean'], 0)
+            self.assertTrue(np.isnan(record['frequency']))
 
     def test_noise_replicates_are_reproducible_and_restore_rng(self):
         simulation = replace(self.simulation, params_source='dict(dT=.1, a=1., b=2., n_var=1, sigma=1., allow_negative=True)',

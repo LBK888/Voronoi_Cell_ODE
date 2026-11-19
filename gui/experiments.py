@@ -6,6 +6,8 @@ from numbers import Real
 import numpy as np
 
 from gui.simulation_session import SimulationRequest, SimulationSession
+from gui.model_files import MOVEMENT_OPTIONS
+from gui.response_dynamics import response_dynamics
 from voronoi_grid import VoronoiGrid
 
 
@@ -15,6 +17,9 @@ METRICS = {
     'final_cv': 'Final spatial CV (std / |mean|)',
     'tail_mean': 'Tail mean of spatial mean',
     'tail_amplitude': 'Tail peak-to-peak of spatial mean',
+    'rise_slope': 'First rise: maximum slope (value / time)',
+    'onset_time': 'First rise: tangent onset (time)',
+    'frequency': 'Oscillation frequency (cycles / time)',
 }
 
 
@@ -24,8 +29,8 @@ class ExperimentCancelled(Exception):
 
 @dataclass(frozen=True)
 class SweepAxis:
-    kind: str  # parameter or initial
-    target: object  # parameter name or state-column index
+    kind: str  # parameter, movement or initial
+    target: object  # parameter name, movement field or state-column index
     minimum: float
     maximum: float
     count: int = 10
@@ -33,8 +38,10 @@ class SweepAxis:
     label: str = ''
 
     def values(self):
-        if self.kind not in ('parameter', 'initial'):
-            raise ValueError('Axis type must be parameter or initial concentration')
+        if self.kind not in ('parameter', 'initial', 'movement'):
+            raise ValueError('Axis type must be parameter, initial concentration or movement')
+        if self.kind == 'movement' and self.target not in [field for _, field, _ in MOVEMENT_OPTIONS]:
+            raise ValueError('Unknown cell movement strength')
         if self.scale not in ('linear', 'log'):
             raise ValueError('Axis scale must be linear or log')
         if not isinstance(self.count, int) or not 2 <= self.count <= 200:
@@ -89,6 +96,8 @@ class ExperimentResult:
             'cell_dist': request.simulation.grid.cell_dist,
             'warnings': self.warnings,
             'time_sampling': 'np.arange(0, T, dT); final frame is before T',
+            'dynamics_signal': 'Spatial mean of observable across living cells at each frame. '
+                               'Blank dynamic metrics indicate unresolved events.',
             'aggregation': 'All replicates must succeed; otherwise the pixel is NaN. std uses ddof=0.',
         }
 
@@ -153,7 +162,7 @@ class ExperimentRunner:
                 if axis.kind == 'initial':
                     if not isinstance(axis.target, int) or not 0 <= axis.target < n_var:
                         raise ValueError('Initial concentration target is outside the state vector')
-                else:
+                elif axis.kind == 'parameter':
                     value = baseline.params.get(axis.target)
                     if (not isinstance(value, Real) or isinstance(value, bool)
                             or axis.target == 'n_var' or not np.isfinite(value)):
@@ -201,15 +210,19 @@ class ExperimentRunner:
                     np.random.seed(seed)
                     overrides = dict(request.simulation.parameter_overrides)
                     initial = dict(request.simulation.initial_overrides)
+                    movement = {}
+                    targets = {'parameter': overrides, 'initial': initial, 'movement': movement}
                     for axis, value in ((request.x, x), (request.y, y)):
-                        (overrides if axis.kind == 'parameter' else initial)[axis.target] = float(value)
+                        targets[axis.kind][axis.target] = float(value)
                     response, error = np.nan, ''
+                    features = dict.fromkeys(('final_mean', 'rise_slope', 'onset_time', 'frequency'), np.nan)
                     try:
                         simulation = replace(
                             request.simulation,
                             grid=VoronoiGrid.from_cells(request.simulation.grid.copy_cells(),
                                                        cell_dist=request.simulation.grid.cell_dist),
                             parameter_overrides=overrides, initial_overrides=initial,
+                            movement=replace(request.simulation.movement, **movement),
                         )
                         session = SimulationSession(simulation)
 
@@ -221,14 +234,24 @@ class ExperimentRunner:
                         result = session.run(progress_callback=progress, check_cancel=check_cancel,
                                              warning_callback=warn)
                         ensure_running()
-                        response = measure_response(result.history, request.observable,
-                                                    request.metric, request.tail_fraction)
+                        features['final_mean'] = measure_response(result.history, request.observable,
+                                                                  'final_mean', request.tail_fraction)
+                        means = [np.mean(frame[:, request.observable]) if len(frame) else np.nan
+                                 for frame in result.history]
+                        features.update(response_dynamics(means, float(result.params['dT'])))
+                        if request.metric in features:
+                            response = features[request.metric]
+                            if not np.isfinite(response):
+                                error = f'{request.metric} unresolved in sampled spatial mean'
+                        else:
+                            response = measure_response(result.history, request.observable,
+                                                        request.metric, request.tail_fraction)
                     except ExperimentCancelled:
                         raise
                     except Exception as exception:
                         error = str(exception)
                     records.append(dict(x=float(x), y=float(y), replicate=repeat + 1,
-                                        seed=seed, response=response, error=error))
+                                        seed=seed, response=response, error=error, **features))
                     responses.append(response)
                     completed += 1
                     report(int(100 * completed / total), f'Completed {completed}/{total} runs')

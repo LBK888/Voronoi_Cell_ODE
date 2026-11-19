@@ -120,6 +120,16 @@ class ExperimentUiTests(unittest.TestCase):
         self.window.enable_cli_action.setChecked(False)
         self.assertFalse(cli_enabled())
 
+    def test_movement_strengths_on_both_axes(self):
+        self.window.settings_tabs.setCurrentIndex(self.window.experiments_tab_index)
+        panel = self.window.experiments_panel
+        for axis, target in ((panel.x_axis, 'vertex_strength'), (panel.y_axis, 'away_strength')):
+            axis.kind.setCurrentIndex(axis.kind.findData('movement'))
+            self.assertEqual(axis.target.count(), 5)
+            axis.target.setCurrentIndex(axis.target.findData(target))
+            self.assertEqual(axis.target.currentData(), target)
+        self.assertGreaterEqual(panel.metric.findData('frequency'), 0)
+
     def test_real_tab_worker_heatmap_exports_and_settings_roundtrip(self):
         tabs = self.window.settings_tabs
         self.assertEqual([tabs.tabText(i) for i in range(tabs.count())][-2:], ['Run', 'Experiments'])
@@ -146,6 +156,8 @@ class ExperimentUiTests(unittest.TestCase):
         panel.export_data(csv)
         table = pd.read_csv(csv)
         self.assertEqual(len(table), 4)
+        np.testing.assert_allclose(table.final_mean, table.response)
+        self.assertTrue(table[['rise_slope', 'onset_time', 'frequency']].isna().all().all())
         np.testing.assert_allclose(table.pixel_mean, [1.2, 1.5, 1.5, 1.8])
         metadata = json.loads(csv.with_name('sweep_settings.json').read_text(encoding='utf-8'))
         self.assertEqual(metadata['x']['target'], 'a')

@@ -55,7 +55,7 @@ def experiment_request(request, settings, seed):
             raise ValueError(f'Choose a target for experiments.{key}.')
         target = options['target']
         kind = options.get('kind', 'parameter')
-        label = str(target) if kind == 'parameter' else f'Y[{target}]'
+        label = f'Y[{target}]' if kind == 'initial' else str(target)
         return SweepAxis(kind, target, float(options['minimum']), float(options['maximum']),
                          options.get('count', 10), options.get('scale', 'linear'), label)
 

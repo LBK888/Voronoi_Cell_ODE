@@ -42,4 +42,34 @@ Agent 以 subprocess 呼叫時，應傳入參數陣列，例如 `[exe, "--cli", 
 }
 ```
 
-可用指標為 `final_mean`、`final_std`、`final_cv`、`tail_mean`、`tail_amplitude`。開啟 JSON 後可用 **Generate Parameter Controls** 檢查與調整參數。GUI 與 CLI 使用同一模擬引擎。
+X、Y 均可選 **Cell movement strength**。CLI 請設 `"kind": "movement"`，target 可填 `random_strength`、`away_strength`、`convergent_strength`、`repulsion_strength` 或 `vertex_strength`。掃描值直接套用到該次模擬，即使模板原先關閉該項移動也有效；0 表示關閉。
+
+熱圖可選原有的 `final_mean`、`final_std`、`final_cv`、`tail_mean`、`tail_amplitude`，以及以下三項動態指標。每次重複實驗的 CSV 都包含 `final_mean` 與三項動態指標。`response`、`pixel_mean` 與 `pixel_std` 對應熱圖選定的指標。
+
+| CSV 欄位 | 定義與單位 |
+|---|---|
+| `rise_slope` | 第一段明顯上升內，以連續五幀做局部直線回歸，取最大正斜率。單位為物種值／模型時間。 |
+| `onset_time` | 將該段最陡切線回推至段首基線（前一明顯谷底或初值），限制於段首至切點之間，回報從模擬開始算起的時間。 |
+| `frequency` | 相鄰明顯波峰之時間差的中位數取倒數，單位為週期數／模型時間。 |
+
+三者都使用逐幀存活細胞的空間平均與該次模擬的 `dT`。異步細胞在空間平均時可能互相抵消。分裂或凋亡改變細胞組成時，也可能造成平均訊號的變化。無法辨識的指標在 CSV 留空，選為熱圖指標時顯示灰色。
+
+斜率與起始時間採用最大斜率切線的幾何定義，將其應用到第一段明顯上升。峰谷偵測使用五幀移動平均，顯著度門檻取全段振幅的 10%、估計雜訊的五倍與浮點誤差下限的最大值。雜訊尺度以二階差分絕對值中位數除以 1.652 估算。[Kahm 等，grofit (2010)](https://www.jstatsoft.org/article/view/v033i07)
+
+頻率採用平滑後的峰間距法。此實作用於掃描的判讀門檻為至少三個峰、週期至少五幀、所有峰距距離中位數在 25% 以內，且波形平移一個估計週期後的 Pearson 相關至少為 0.70。這些門檻可能排除具有長暫態、變頻或衰減的訊號。[Chemical modulation of circadian rhythms and assessment of cellular behavior via indirubin and derivatives](https://pmc.ncbi.nlm.nih.gov/articles/PMC8516081/)
+
+### 隨附模板驗證
+
+下表使用 seed 0、模板原有網格、時長與時間步長。列出第一個狀態變數的空間平均。這次七條曲線的頻率都未通過判讀門檻。
+
+| 模板 | 觀測量 | 最終平均 | 上升斜率 | 起始時間 |
+|---|---|---:|---:|---:|
+| Noisy Oscillator | mRNA | 0.8052 | 0.4855 | 0 |
+| Cell Cycle | Cyclin_CDK1 | 0.2830 | 0.1420 | 0.00035 |
+| cardiac pulses | Voltage | −0.6080 | 0.2688 | 23.70 |
+| Turing Pattern Zebrafish | Activator | 2.8700 | 11.2441 | 4.3014 |
+| soluble Delta notochord | DeltaC | 10.9016 | 19.6994 | 0 |
+| PSM w DAPT | Phase_Theta | 36.3768 | 2.0034 | 0.00464 |
+| soluble Delta ionocyte | DeltaC | 11.2062 | 19.6449 | 0 |
+
+心臟模板的刺激週期為 25。對左側 24 個直接受刺激細胞的平均電位獨立驗算，得到頻率 0.03987（預期 0.04000）。全組織平均出現大小交替的峰，約 12.5 的峰距只得到 0.53 的波形相關，因此頻率留空。其起始時間 23.70 表示通過顯著度門檻的第一段組織平均上升。左側細胞的起始估計為 0.061，約一個取樣間隔。另以已知斜率 2、延遲 4 的線性上升與週期 4 的正弦波測試，兩種時間步長（0.05、0.1）均重現預設值。

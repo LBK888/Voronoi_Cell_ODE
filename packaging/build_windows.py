@@ -57,7 +57,7 @@ def collect_notices(project):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', default='2026.11.12')
+    parser.add_argument('--version', default='2026.11.19')
     args = parser.parse_args()
     if sys.platform != 'win32':
         parser.error('Run this build with 64-bit Windows Python')
